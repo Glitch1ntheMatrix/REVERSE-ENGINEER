@@ -196,10 +196,18 @@ export const parseBinaryTarget = async (
         targetKind === "database"
           ? undefined
           : await detectArtifactFormat(path, handle, signal);
-      if (
+      const databaseTarget =
         targetKind === "database" ||
-        (targetKind === undefined && path.toLowerCase().endsWith(".hop"))
-      )
+        (targetKind === undefined && path.toLowerCase().endsWith(".hop"));
+      if (databaseTarget && dsymPath !== undefined)
+        return err(
+          new BinaryTargetError(
+            path,
+            "dsym_path applies only to Mach-O executable targets; this target is an analysis database",
+            { constraint: "debug_companion_rejected" },
+          ),
+        );
+      if (databaseTarget)
         return ok({
           path,
           sourcePath,
@@ -207,6 +215,14 @@ export const parseBinaryTarget = async (
           kind: "database",
           format: "analysis-database",
         });
+      if (artifactFormat !== undefined && dsymPath !== undefined)
+        return err(
+          new BinaryTargetError(
+            path,
+            `dsym_path applies only to Mach-O executable targets; this target is ${artifactFormat}`,
+            { constraint: "debug_companion_rejected" },
+          ),
+        );
       if (artifactFormat !== undefined) {
         const identity = {
           path,
@@ -242,6 +258,8 @@ export const parseBinaryTarget = async (
           dsymPath,
           targetHandle: handle,
           targetSize: metadata.size,
+          architecture: detected.value.architecture,
+          ...(signal === undefined ? {} : { signal }),
         });
         if (!companion.ok)
           return err(
