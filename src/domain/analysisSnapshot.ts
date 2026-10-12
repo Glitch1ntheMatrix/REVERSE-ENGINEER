@@ -105,6 +105,7 @@ const subjectSchema = z.discriminatedUnion("format", [
 ]);
 /** Companion identity that partitions session and snapshot reuse by dSYM. */
 const debugCompanionSchema = z.object({
+  source_path: z.string(),
   uuid: z.string(),
   member_sha256: z.string(),
 });
@@ -370,6 +371,7 @@ export const snapshotTarget = (
       (target.format === "mach-o" || target.format === "mach-o-universal") &&
       target.debugCompanion !== undefined
         ? {
+            source_path: target.debugCompanion.sourcePath,
             uuid: target.debugCompanion.uuid,
             member_sha256: target.debugCompanion.memberSha256,
           }
@@ -418,7 +420,8 @@ const sameDebugCompanion = (
   return (
     recorded !== null &&
     recorded.uuid === selected.uuid &&
-    recorded.member_sha256 === selected.memberSha256
+    recorded.member_sha256 === selected.memberSha256 &&
+    (recorded.source_path ?? null) === selected.sourcePath
   );
 };
 
