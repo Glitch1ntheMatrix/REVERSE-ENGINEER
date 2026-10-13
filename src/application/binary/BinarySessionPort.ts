@@ -13,6 +13,10 @@ import type { Result } from "../../domain/result.js";
 import type { EvidenceIntegrityError } from "../../domain/evidenceErrors.js";
 import type { AnalysisSnapshotLoader } from "./BinarySessionOpen.js";
 import type { WorkflowSnapshotRecordInput } from "./BinarySessionRecords.js";
+import type {
+  BinarySessionOpenOptions,
+  ResolvedSessionOpen,
+} from "./BinarySessionOpen.js";
 
 import type {
   AnalysisExecution,
@@ -49,20 +53,11 @@ export interface BinarySessionPort
     signal: AbortSignal | undefined,
     operation: (analysis: AnalysisOperationPort) => Promise<Value>,
   ): Promise<Result<Value, AnalysisError>>;
-  /** Serialize an external mutation and retire any active target afterward. */
-  withAdmittedExternalMutation<Value>(
-    _path: string | undefined,
-    signal: AbortSignal | undefined,
-    operation: () => Promise<Result<Value, AnalysisError>>,
-    retirementFailure: (
-      value: Result<Value, AnalysisError>,
-      error: AnalysisError,
-    ) => AnalysisError,
-    operationName?: string,
-    cleanupRecovery?: (
-      failure: AnalysisError | undefined,
-    ) => Promise<Result<null, AnalysisError>>,
-  ): Promise<Result<Result<Value, AnalysisError>, AnalysisError>>;
+  /** Resolve a path with session-owned resources without opening a provider. */
+  previewPath(
+    path: string,
+    options?: BinarySessionOpenOptions,
+  ): Promise<Result<ResolvedSessionOpen, AnalysisError>>;
   open(
     path: string,
     options?: {
