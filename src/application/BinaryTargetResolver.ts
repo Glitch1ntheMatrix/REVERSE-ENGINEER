@@ -119,7 +119,9 @@ export const parseBinaryTarget = async (
     const { executable: path, infoPlist } = resolved.value;
     const bundle =
       infoPlist === undefined ? {} : { bundleInfoPlist: infoPlist };
-    return await withRegularFile(
+    return await withRegularFile<
+      Result<BinaryTarget, BinaryTargetError | AnalysisCancelledError>
+    >(
       path,
       async (handle, metadata) => {
         throwIfTargetResolutionCancelled(signal);
