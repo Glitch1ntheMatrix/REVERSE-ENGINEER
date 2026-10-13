@@ -12,7 +12,7 @@ import { extname } from "node:path";
 
 import { BinaryTargetError } from "../domain/configurationErrors.js";
 import {
-  openRegularFile,
+  RegularFileChangedError,
   sameRegularFileState,
 } from "../filesystem/RegularFile.js";
 import { AnalysisCancelledError } from "../domain/analysisErrorCore.js";
@@ -21,6 +21,11 @@ import {
   type BinaryTarget,
   type MachODebugCompanion,
 } from "../domain/binaryTargetTypes.js";
+import {
+  RegularFileCleanupFailure,
+  withRegularFile,
+} from "./RegularFileRead.js";
+import type { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
 import { admitDebugCompanion } from "./DebugCompanionAdmission.js";
 import { err, ok, type Result } from "../domain/result.js";
 import { readMipsElfMetadata } from "./MipsElfMetadata.js";
@@ -73,6 +78,7 @@ export interface BinaryTargetResolverOptions {
   /** Caller-selected dSYM bundle; admitted only for Mach-O executable targets. */
   readonly dsymPath?: string;
   readonly signal?: AbortSignal;
+  readonly resources?: ArtifactResourceScope;
 }
 
 /**
@@ -113,32 +119,51 @@ export const parseBinaryTarget = async (
     const { executable: path, infoPlist } = resolved.value;
     const bundle =
       infoPlist === undefined ? {} : { bundleInfoPlist: infoPlist };
-    const handle = await openRegularFile(path, {
-      symlinks: "reject",
-      signal,
-    });
-    try {
-      throwIfTargetResolutionCancelled(signal);
-      const metadata = await handle.stat();
-      throwIfTargetResolutionCancelled(signal);
-      if (formatHint === "raw-binary") {
-        if (targetKind !== undefined && targetKind !== "executable")
-          return err(
-            new BinaryTargetError(
-              path,
-              "raw-binary format requires an executable target kind",
-              { constraint: "load_selection_rejected" },
-            ),
-          );
-        const admitted = admitRawBinary({
+    return await withRegularFile(
+      path,
+      async (handle, metadata) => {
+        throwIfTargetResolutionCancelled(signal);
+        if (formatHint === "raw-binary") {
+          if (targetKind !== undefined && targetKind !== "executable")
+            return err(
+              new BinaryTargetError(
+                path,
+                "raw-binary format requires an executable target kind",
+                { constraint: "load_selection_rejected" },
+              ),
+            );
+          const admitted = admitRawBinary({
+            architecture,
+            entryPoint,
+            fileBytes: metadata.size,
+          });
+          if (!admitted.ok)
+            return err(
+              new BinaryTargetError(path, admitted.error.reason, {
+                constraint: admitted.error.constraint,
+              }),
+            );
+          return ok({
+            path,
+            sourcePath: canonical,
+            sha256: await sha256Handle(handle, path, metadata, signal),
+            kind: "executable",
+            format: "raw-binary",
+            architecture: admitted.value.architecture,
+            availableArchitectures: [admitted.value.architecture],
+            entryPoint: admitted.value.entryPoint,
+            entryPointSource: admitted.value.entryPointSource,
+          });
+        }
+        const pairing = rawBinarySelectionError({
+          ...(formatHint === undefined ? {} : { format: formatHint }),
           architecture,
           entryPoint,
-          fileBytes: metadata.size,
         });
-        if (!admitted.ok)
+        if (pairing !== undefined)
           return err(
-            new BinaryTargetError(path, admitted.error.reason, {
-              constraint: admitted.error.constraint,
+            new BinaryTargetError(path, pairing, {
+              constraint: "load_selection_rejected",
             }),
           );
         return ok({
@@ -254,20 +279,42 @@ export const parseBinaryTarget = async (
               { constraint: "debug_companion_rejected" },
             ),
           );
-        const companion = await admitDebugCompanion({
-          dsymPath,
-          targetHandle: handle,
-          targetSize: metadata.size,
-          architecture: detected.value.architecture,
-          ...(detected.value.format === "mach-o-universal"
-            ? { targetSlice: detected.value.universalSlice }
-            : {}),
-          ...(signal === undefined ? {} : { signal }),
-        });
-        if (!companion.ok)
+        if (databaseTarget)
+          return ok({
+            path,
+            sourcePath: process.platform === "win32" ? candidate : canonical,
+            sha256: await sha256Handle(handle, path, metadata, signal),
+            kind: "database",
+            format: "analysis-database",
+          });
+        const artifactFormat = await detectArtifactFormat(path, handle, signal);
+        if (artifactFormat !== undefined && dsymPath !== undefined)
           return err(
-            new BinaryTargetError(path, companion.error.reason, {
-              constraint: "debug_companion_rejected",
+            new BinaryTargetError(
+              path,
+              `dsym_path applies only to Mach-O executable targets; this target is ${artifactFormat}`,
+              { constraint: "debug_companion_rejected" },
+            ),
+          );
+        if (artifactFormat !== undefined) {
+          const identity = {
+            path,
+            sourcePath: process.platform === "win32" ? candidate : canonical,
+            sha256: await sha256Handle(handle, path, metadata, signal),
+          };
+          return isArchiveFormat(artifactFormat)
+            ? ok({ ...identity, kind: "archive", format: artifactFormat })
+            : ok({ ...identity, kind: "artifact", format: artifactFormat });
+        }
+        const detected = await readExecutableMetadata(
+          handle,
+          hostArchitecture,
+          signal,
+        );
+        if (!detected.ok)
+          return err(
+            new BinaryTargetError(path, detected.error, {
+              constraint: "file_format_rejected",
             }),
           );
         debugCompanion = companion.value;
@@ -281,12 +328,29 @@ export const parseBinaryTarget = async (
         ...detected.value,
         ...(debugCompanion === undefined
           ? {}
-          : { debugCompanion: { ...debugCompanion } }),
-      });
-    } finally {
-      await handle.close();
-    }
+          : { resources: options.resources }),
+      },
+    );
   } catch (cause: unknown) {
+    if (cause instanceof RegularFileCleanupFailure)
+      return err(
+        new BinaryTargetError(
+          cause.path,
+          "Selected input descriptor cleanup could not be confirmed",
+          {
+            cause,
+            cleanup: {
+              reason:
+                cause.cleanupCause instanceof Error
+                  ? cause.cleanupCause.message
+                  : String(cause.cleanupCause),
+              resources: [cause.path],
+            },
+          },
+        ),
+      );
+    if (cause instanceof RegularFileChangedError)
+      return err(new BinaryTargetError(cause.path, cause.message, { cause }));
     if (cause instanceof AnalysisCancelledError) return err(cause);
     const cancellation = regularFileCancellation(cause);
     if (cancellation !== undefined)
