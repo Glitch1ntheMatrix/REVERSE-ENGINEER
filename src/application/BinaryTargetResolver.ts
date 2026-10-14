@@ -124,7 +124,12 @@ export const parseBinaryTarget = async (
       Result<BinaryTarget, BinaryTargetError | AnalysisCancelledError>
     >(
       path,
-      async (handle, metadata) => {
+      async (
+        handle,
+        metadata,
+      ): Promise<
+        Result<BinaryTarget, BinaryTargetError | AnalysisCancelledError>
+      > => {
         throwIfTargetResolutionCancelled(signal);
         if (formatHint === "raw-binary") {
           if (targetKind !== undefined && targetKind !== "executable")
