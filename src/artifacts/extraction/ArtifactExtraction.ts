@@ -341,14 +341,17 @@ const materializeSelection = async ({
   const extracted: ExtractedOccurrence[] = [];
   try {
     await reader.prepareContainer?.(inventory.manifest.root_sha256, signal);
+    const platform = input.platform ?? process.platform;
+    let destinationCaseInsensitive = false;
     if (dryRun) {
-      await SafeOutputTree.checkDestination(input.outputRoot);
+      const destination = await SafeOutputTree.checkDestination(
+        input.outputRoot,
+        platform,
+      );
+      destinationCaseInsensitive = destination.caseInsensitive;
     } else {
       try {
-        output = await SafeOutputTree.create(
-          input.outputRoot,
-          input.platform ?? process.platform,
-        );
+        output = await SafeOutputTree.create(input.outputRoot, platform);
       } catch (cause: unknown) {
         if (cause instanceof SafeOutputTreeCreationFailure) output = cause.tree;
         throw cause;
@@ -362,7 +365,8 @@ const materializeSelection = async ({
     if (dryRun) {
       await planSelectedEntries({
         reader,
-        platform: input.platform ?? process.platform,
+        platform,
+        caseInsensitive: destinationCaseInsensitive,
         byPath,
         extracted,
         traversal,
@@ -437,6 +441,7 @@ const materializeSelection = async ({
 const planSelectedEntries = async ({
   reader,
   platform,
+  caseInsensitive,
   byPath,
   extracted,
   traversal,
@@ -444,13 +449,16 @@ const planSelectedEntries = async ({
 }: {
   readonly reader: ArtifactReader;
   readonly platform: NodeJS.Platform;
+  readonly caseInsensitive: boolean;
   readonly byPath: Map<string, SelectedOccurrence>;
   readonly extracted: ExtractedOccurrence[];
   readonly traversal: ArtifactTraversalObservation;
   readonly signal: AbortSignal | undefined;
 }): Promise<void> => {
   const readerRegistry = new ArtifactPathRegistry();
-  const outputRegistry = new ArtifactPathRegistry();
+  const outputRegistry = new ArtifactPathRegistry({
+    caseInsensitive,
+  });
   for await (const entry of reader.entries(signal, traversal)) {
     const path = normalizeArtifactPath(entry.path);
     readerRegistry.add(path, entry.kind);
@@ -495,6 +503,9 @@ const createDryRunPlan = (
 ): ArtifactExtractionPlan => {
   const selectedById = new Map(
     selected.map((item) => [item.occurrence.occurrence_id, item] as const),
+  );
+  const nodesById = new Map(
+    inventory.nodes.map((node) => [node.artifact_id, node] as const),
   );
   const entries: ArtifactExtractionPlanEntry[] = [];
   let plannedFiles = 0;
@@ -543,13 +554,20 @@ const createDryRunPlan = (
         : occurrence.entry_kind === "metadata"
           ? "Logical metadata declarations do not claim a destination file path."
           : "Nested archive member remains inside its containing regular file and is not expanded during single-container extraction.";
+    const observedNode =
+      occurrence.entry_kind === "directory" ||
+      occurrence.entry_kind === "metadata" ||
+      occurrence.artifact_id === null
+        ? undefined
+        : nodesById.get(occurrence.artifact_id);
     entries.push({
       occurrence_id: occurrence.occurrence_id,
       logical_path: occurrence.logical_path,
       entry_kind: occurrence.entry_kind,
       status: "unsupported",
       reason,
-      observed_bytes: null,
+      observed_bytes:
+        typeof observedNode?.size === "number" ? observedNode.size : null,
       declared_bytes: occurrence.declared_size,
     });
   }
