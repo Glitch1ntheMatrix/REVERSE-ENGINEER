@@ -416,6 +416,7 @@ const materializeSelection = async ({
       traversal.snapshot(),
       reader.provenance(),
       unresolvedCaseReasons,
+      destinationCaseSensitivity,
     );
     if (input.expectedRootSha256 !== undefined)
       await assertArtifactSelectedSource(sourcePath, input.selectedPath);
@@ -463,7 +464,6 @@ const planSelectedEntries = async ({
   const readerRegistry = new ArtifactPathRegistry();
   const outputRegistry = new ArtifactPathRegistry({
     caseInsensitive: caseSensitivity === "case-insensitive",
-    platform,
   });
   const staged: {
     readonly selectedItem: SelectedOccurrence;
@@ -500,19 +500,20 @@ const planSelectedEntries = async ({
       `Inventoried regular artifact entries were not materialized: ${[...byPath.keys()].sort(compareUnicodeCodePoints).join(", ")}`,
     );
   const unresolvedByOccurrenceId = new Map<string, string>();
-  const unknownCollisions =
-    caseSensitivity === "unknown"
-      ? destinationCaseCollisions(
+  const unresolvedCollisions =
+    caseSensitivity === "case-sensitive"
+      ? undefined
+      : destinationCaseCollisions(
           staged.map(({ destinationPath }) => destinationPath),
-          platform,
-        )
-      : undefined;
+        );
   for (const { selectedItem, destinationPath } of staged) {
-    const collision = unknownCollisions?.get(destinationPath)?.[0];
+    const collision = unresolvedCollisions?.get(destinationPath)?.[0];
     if (collision !== undefined) {
       unresolvedByOccurrenceId.set(
         selectedItem.occurrence.occurrence_id,
-        `Destination directory case sensitivity is unknown without creating files; case-colliding path ${collision.prefix} vs ${collision.other} cannot be verified as distinct during dry-run.`,
+        caseSensitivity === "unknown"
+          ? `Destination directory case sensitivity is unknown without creating files; case-colliding path ${collision.prefix} vs ${collision.other} cannot be verified as distinct during dry-run.`
+          : `Destination filesystem case table for non-ASCII path ${collision.prefix} vs ${collision.other} is not observed without creating files; collision status remains unresolved during dry-run.`,
       );
       continue;
     }
@@ -728,6 +729,7 @@ const createExtractionResult = (
   traversal: ArtifactReaderTraversal,
   materializationProvenance: readonly ArtifactCommand[],
   unresolvedCaseReasons: ReadonlyMap<string, string> = new Map(),
+  destinationCaseSensitivity: DestinationCaseSensitivity = "case-sensitive",
 ): ArtifactExtractionResult => {
   const selectedIds = new Set(
     selected.map(({ occurrence }) => occurrence.occurrence_id),
@@ -784,7 +786,9 @@ const createExtractionResult = (
       ...(unresolvedCaseReasons.size === 0
         ? []
         : [
-            "Destination directory case sensitivity is unknown because the destination parent has no observable cased entry; case-colliding paths remain unresolved in the dry-run plan.",
+            destinationCaseSensitivity === "unknown"
+              ? "Destination directory case sensitivity is unknown because the destination parent has no observable cased entry; case-colliding paths remain unresolved in the dry-run plan."
+              : "Non-ASCII case-folding paths depend on the destination filesystem case table and cannot be verified without creating files; affected paths remain unresolved in the dry-run plan.",
           ]),
       ...(integrityContradictions.length === 0
         ? []
