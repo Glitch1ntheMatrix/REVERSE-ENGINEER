@@ -7,7 +7,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse as parseToml } from "smol-toml";
 
@@ -155,6 +155,37 @@ it.skipIf(process.platform === "win32").each([false, true])(
     expect(
       await resolveClientConfigTransactionPath(`${root}/absent/../config.json`),
     ).toBeUndefined();
+  },
+);
+
+it
+  .skipIf(process.platform === "win32")
+  .each(
+    ["/", "/."].flatMap((suffix) =>
+      [false, true].map((relativePath) => ({ suffix, relativePath })),
+    ),
+  )(
+  "rejects a missing configuration with directory suffix $suffix and relative=$relativePath",
+  async ({ suffix, relativePath }) => {
+    const root = await createTestTempDirectory("rea-config-directory-suffix-");
+    const path = join(root, "config.json");
+    const requested = `${relativePath ? relative(process.cwd(), path) : path}${suffix}`;
+    expect(await resolveClientConfigTransactionPath(requested)).toBe(
+      `${path}/`,
+    );
+    expect(
+      await configureClientConfiguration({
+        name: "cursor",
+        format: "json",
+        configPath: requested,
+      }),
+    ).toMatchObject({ status: "failed" });
+    const selected = await lstat(path).catch((cause: unknown) => {
+      if (cause instanceof Error && "code" in cause && cause.code === "ENOENT")
+        return undefined;
+      throw cause;
+    });
+    expect(selected?.isFile() ?? false).toBe(false);
   },
 );
 
