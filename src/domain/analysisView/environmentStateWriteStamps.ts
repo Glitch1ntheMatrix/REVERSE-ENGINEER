@@ -23,6 +23,7 @@ import {
   readClock,
   sequenceNumber,
   spelledLike,
+  type ClockFormat,
 } from "./environmentStateWriteValues.js";
 
 /** A clock value counts as written by the request when it lies this close to the request's start. */
@@ -244,6 +245,22 @@ export const createdNestedClock = (
     return ms >= startMs - TRUNCATION_MS && ms <= startMs + NESTED_WINDOW_MS;
   });
   return stamped ? nestedRule(field, value, members, evidence.type) : undefined;
+};
+
+/** Whether a clock is one a request starting at `startMs` stamped, in the given format. */
+export const stampedBy = (
+  value: JsonValue | undefined,
+  format: ClockFormat,
+  startMs: number | undefined,
+): boolean => {
+  const clock = readClock(value);
+  return (
+    clock !== undefined &&
+    startMs !== undefined &&
+    same(clock.format, format) &&
+    clock.ms >= startMs - TRUNCATION_MS &&
+    clock.ms <= startMs + NESTED_WINDOW_MS
+  );
 };
 
 /** The largest integer the objects hold at a member, spelled as the exemplar spells it. */

@@ -794,7 +794,8 @@ spells the earlier calls' value too: a `composed` or `template` string, or a
 `sequence` started at that value (`start`), as Vikunja numbers a project's tasks
 past those deleted before the capture. Two `made-object` rules agree in their
 clocks and own members, and a count only the later call shows starts at the
-first object's value. Members either call sent are accepted, only those every call sent are
+first object's value; a later create's made object must hold clocks its own
+request stamped, in the rule's format. Members either call sent are accepted, only those every call sent are
 required, and an echoed member a call left out takes the value that call stored
 (`body.defaults`). A member one call sent and stored as sent, and another left
 out and the application numbered one past the others, takes the value a call

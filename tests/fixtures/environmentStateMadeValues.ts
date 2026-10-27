@@ -14,6 +14,8 @@ interface TaskOptions {
   readonly firstIdentifier?: string;
   /** Whether lists show each task's subscription, as item reads do. */
   readonly listsSubscriptions?: boolean;
+  /** A third create of its own task whose subscription shows a clock from before its request. */
+  readonly staleThird?: boolean;
 }
 
 const seed = (id: number, index: number, clocked: boolean): JsonObject => ({
@@ -87,14 +89,14 @@ const taskRows = (options: TaskOptions = {}): TimedCaptureRow[] => {
     ["POST", "/api/projects/5/tasks", second, 201, sent(second)],
     ["GET", "/api/tasks/21", secondRead],
     ["GET", "/api/tasks", [...seeds, firstRead, secondRead].map(listed)],
-    ...(options.thirdSubscribes === undefined
+    ...(options.thirdSubscribes === undefined && options.staleThird !== true
       ? []
       : thirdRows(
           made(22, 17, "Paint the gallery rail", 8),
           subscribed(
             made(22, 17, "Paint the gallery rail", 8),
             23,
-            8,
+            options.staleThird === true ? 4 : 8,
             options.thirdSubscribes,
           ),
           [...seeds, firstRead, secondRead].map(listed),
@@ -157,4 +159,9 @@ export const MISLINKED_TASK_ROWS: readonly TimedCaptureRow[] = taskRows({
 /** A first create spelling its identifier `TASK-15`, where the second spells `#16`. */
 export const RESPELLED_TASK_ROWS: readonly TimedCaptureRow[] = taskRows({
   firstIdentifier: "TASK-15",
+});
+
+/** A third create read back with a subscription whose clock is from before its request. */
+export const STALE_MADE_TASK_ROWS: readonly TimedCaptureRow[] = taskRows({
+  staleThird: true,
 });
