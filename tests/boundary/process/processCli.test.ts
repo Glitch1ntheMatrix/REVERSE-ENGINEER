@@ -46,7 +46,10 @@ console.log(JSON.stringify({ results: pids.map(pid => identities ? {
     compiler,
     `#!${process.execPath}
 const fs = process.getBuiltinModule("node:fs");
-const output = process.argv[process.argv.indexOf("-o") + 1];
+const outputIndex = process.argv.indexOf("-o");
+const output = process.argv[outputIndex + 1];
+if (outputIndex < 0 || !output || output.startsWith("-"))
+  throw new Error("Missing controlled helper output");
 fs.writeFileSync(output, ${JSON.stringify(helper)});
 fs.chmodSync(output, 0o755);
 `,
