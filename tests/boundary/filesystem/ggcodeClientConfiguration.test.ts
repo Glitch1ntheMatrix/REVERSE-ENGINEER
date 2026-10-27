@@ -111,7 +111,8 @@ describe("ggcode YAML registration", () => {
   command: alpha-cmd
   args: ["serve"]
 - name: rea
-  command: outdated
+  command: rea
+  args: ["mcp"]
 # trailing note
 `,
     );
@@ -140,7 +141,8 @@ describe("ggcode YAML registration", () => {
       client.configPath,
       `- model: &reaName rea
   name: *reaName
-  command: outdated
+  command: rea
+  args: ["mcp"]
 `,
     );
 
@@ -156,6 +158,27 @@ describe("ggcode YAML registration", () => {
         command: command[0],
         args: command.slice(1),
       },
+    ]);
+  });
+
+  it("refuses to replace an unowned rea entry", async () => {
+    const { client } = await ggcodeClient();
+    await writeFile(
+      client.configPath,
+      `- name: rea
+  command: other-tool
+  args: ["serve"]
+`,
+    );
+
+    const result = await configureClientConfiguration(client, {}, command);
+    expect(result).toMatchObject({
+      status: "failed",
+      reason: "registration_ownership",
+    });
+    const servers = await readServers(client.configPath);
+    expect(servers).toEqual([
+      { name: "rea", command: "other-tool", args: ["serve"] },
     ]);
   });
 

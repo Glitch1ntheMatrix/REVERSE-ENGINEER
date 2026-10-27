@@ -25,7 +25,7 @@ import { defaultKunaCacheDirectory } from "../config/kunaCacheDirectory.js";
 import { linuxHopperReleaseCacheDirectory } from "./LinuxHopperCacheDirectory.js";
 
 import { ClientConfigurationPublication } from "./ClientConfigurationPublication.js";
-import { parseClientRegistrationLauncher } from "./ClientRegistration.js";
+import { clientRegistrationOwnership } from "./ClientRegistration.js";
 
 import { PRODUCT_IDENTITY } from "../identity.js";
 import {
@@ -34,8 +34,6 @@ import {
   readSkillFile,
   skillDestinationSelection,
 } from "./SetupSkill.js";
-import { classifyClientRegistrationCommand } from "./ClientRegistrationIdentity.js";
-import { CURRENT_ENTRYPOINT_PATH } from "../process/CurrentEntrypointPath.js";
 import { dshDocument } from "./DshCordisPatch.js";
 import { resolveClientConfigTransactionPath } from "./ClientConfigPath.js";
 import {
@@ -803,11 +801,11 @@ const clientRegistrationRemoval = (
   const removeNative =
     (parsed.dialect === "dsh" && dshDocument(parsed.document).carriesEntry) ||
     (Object.hasOwn(parsed.servers, name) &&
-      isOwnedRegistration(parsed.servers[name], client));
+      clientRegistrationOwnership(parsed.servers[name], client) === "owned");
   const legacyPath = legacyClientServerPath(parsed, name);
   const removeLegacy =
     legacyPath !== undefined &&
-    isOwnedRegistration(parsed.legacyServers[name], client);
+    clientRegistrationOwnership(parsed.legacyServers[name], client) === "owned";
   const ownership: RegistrationRemoval = {
     removeNative,
     legacyPath: removeLegacy ? legacyPath : undefined,
@@ -817,11 +815,11 @@ const clientRegistrationRemoval = (
     if (
       (removeNative &&
         shadowed.servers.some(
-          (member) => !isOwnedRegistration(member, client),
+          (member) => clientRegistrationOwnership(member, client) !== "owned",
         )) ||
       (removeLegacy &&
         shadowed.legacyServers.some(
-          (member) => !isOwnedRegistration(member, client),
+          (member) => clientRegistrationOwnership(member, client) !== "owned",
         ))
     )
       return err({
@@ -1039,19 +1037,6 @@ const resolveUninstallConfigPath = async (
       "failed",
       "Configuration path could not be safely verified. Check its permissions and, if it is a symbolic link, verify that the link resolves to a regular file owned by the current user, then rerun uninstall.",
     )
-  );
-};
-
-/** Ownership rule for persistent MCP registrations created by REA setup. */
-const isOwnedRegistration = (value: unknown, client: SetupClient): boolean => {
-  const parsed = parseClientRegistrationLauncher(value, client);
-  if (!parsed.ok) return false;
-  const { command, args } = parsed.value;
-  return (
-    classifyClientRegistrationCommand(
-      [command, ...args],
-      CURRENT_ENTRYPOINT_PATH,
-    ) === "owned"
   );
 };
 
