@@ -634,8 +634,9 @@ and failed SDK calls whose arguments violate the named current REA contract.
 A call whose result the client never reported, or reported inconsistently,
 is not counted as a completed workflow step. A refused permission request
 (Claude Code's `permission_denials`, or a Gemini CLI tool result that failed
-without REA's own MCP tool error), or a terminal client error, is recorded in
-the scenario's `clientFailures` and fails the gate even when the client still
+without REA's own MCP tool error, for a native tool such as `run_shell_command`
+as much as for a REA tool), or a terminal client error, is recorded in the
+scenario's `clientFailures` and fails the gate even when the client still
 returned an answer; REA's own error results remain ordinary call failures.
 Client approval rejections and provider unavailability remain distinct failures;
 truncated JSON previews are not parsed into invented error codes.

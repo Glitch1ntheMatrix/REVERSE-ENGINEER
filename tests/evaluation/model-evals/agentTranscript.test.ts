@@ -7,7 +7,11 @@ import {
   parseCodexEvents,
   parseGeminiCliEvents,
 } from "./AgentTranscript.js";
-import { nativeProviderScenario } from "./AgentEvaluationScenarios.js";
+import { agentEvaluationPassed } from "./AgentEvaluationReport.js";
+import {
+  MISSING_TARGET_SCENARIO,
+  nativeProviderScenario,
+} from "./AgentEvaluationScenarios.js";
 
 const evidence = createEvidence(
   { path: "/tmp/app.asar", sha256: "1".repeat(64), format: "asar" },
@@ -498,6 +502,59 @@ describe("Gemini CLI run facts", () => {
     expect(transcript.clientFailures).toEqual(["result_status:error"]);
     expect(transcript.usage.inputTokens).toBe(5);
   });
+
+  it.each([
+    {
+      label: "refused",
+      error: { type: "PERMISSION_DENIED", message: "denied" },
+    },
+    { label: "unregistered", error: { type: "TOOL_NOT_REGISTERED" } },
+  ])(
+    "fails the missing-target gate after a $label native tool even when the clarification is valid",
+    ({ error }) => {
+      const clarification = JSON.stringify({
+        status: "needs_target",
+        requested_input: "app_name_or_artifact_path",
+        question: "Which app name or artifact path should I inspect?",
+      });
+      const events = (status: "error" | "success") => [
+        {
+          type: "tool_use",
+          tool_id: "call-1",
+          tool_name: "run_shell_command",
+          parameters: { command: "ls ~/Applications" },
+        },
+        status === "error"
+          ? { type: "tool_result", tool_id: "call-1", status, error }
+          : { type: "tool_result", tool_id: "call-1", status, output: "" },
+        { type: "message", role: "assistant", content: clarification },
+        { type: "result", status: "success", stats: { input_tokens: 5 } },
+      ];
+      const gate = (transcript: ReturnType<typeof parseGeminiCliEvents>) => {
+        const metrics = evaluateAgentTranscript(transcript, null);
+        // The native tool is not a REA call either way.
+        expect(metrics.reaCalls).toEqual([]);
+        return agentEvaluationPassed({
+          ...metrics,
+          expectedFirstTool: null,
+          exitCode: 0,
+          targetClarificationPassed:
+            MISSING_TARGET_SCENARIO.validTargetClarification(
+              metrics.finalMessage,
+            ),
+        });
+      };
+      const refused = parseGeminiCliEvents(events("error"));
+      expect(refused.calls).toEqual([]);
+      expect(refused.clientFailures).toEqual([
+        `tool_error:${error.type}:run_shell_command`,
+      ]);
+      expect(gate(refused)).toBe(false);
+      const ran = parseGeminiCliEvents(events("success"));
+      expect(ran.clientFailures).toEqual([]);
+      expect(gate(ran)).toBe(true);
+    },
+  );
 });
 
 describe("Codex transcripts", () => {

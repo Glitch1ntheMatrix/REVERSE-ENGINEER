@@ -643,14 +643,35 @@ interface GeminiReport {
  * expected REA error.
  */
 const geminiClientFailure = (
-  request: McpRequest,
+  tool: string,
   reported: GeminiReport | undefined,
 ): string | undefined => {
   if (reported === undefined || reported.status === "success") return undefined;
   const type = textValue(record(reported.error)?.type);
   return type !== undefined && /^mcp_tool_error$/iu.test(type)
     ? undefined
-    : `tool_error:${type ?? "unknown"}:${request.tool}`;
+    : `tool_error:${type ?? "unknown"}:${tool}`;
+};
+
+interface GeminiInvocation {
+  readonly id: string;
+  /** REA's own tool name for an MCP call, else the client's native tool name. */
+  readonly tool: string;
+  readonly request: McpRequest | undefined;
+}
+
+/**
+ * Every tool Gemini tried is kept for the failure check, so a refused native
+ * tool such as `run_shell_command` is not lost; only MCP requests become calls.
+ */
+const geminiInvocation = (
+  event: Record<string, unknown>,
+): GeminiInvocation | undefined => {
+  const id = textValue(event.tool_id);
+  const name = textValue(event.tool_name);
+  if (id === undefined || name === undefined) return undefined;
+  const request = mcpRequest(GEMINI_MCP_NAME, id, name, event.parameters);
+  return { id, tool: request?.tool ?? name, request };
 };
 
 const geminiCall = (
@@ -696,7 +717,7 @@ const geminiUsage = (event: Record<string, unknown>): AgentTokenUsage => {
 export const parseGeminiCliEvents = (
   events: readonly unknown[],
 ): AgentTranscript => {
-  const requests: McpRequest[] = [];
+  const invocations: GeminiInvocation[] = [];
   const results = new Map<string, GeminiReport>();
   const conflicts = new Set<string>();
   const clientFailures: string[] = [];
@@ -712,13 +733,8 @@ export const parseGeminiCliEvents = (
       segmentOpen = true;
     } else if (event.type === "tool_use") {
       segmentOpen = false;
-      const request = mcpRequest(
-        GEMINI_MCP_NAME,
-        event.tool_id,
-        event.tool_name,
-        event.parameters,
-      );
-      if (request !== undefined) requests.push(request);
+      const invocation = geminiInvocation(event);
+      if (invocation !== undefined) invocations.push(invocation);
     } else if (event.type === "tool_result") {
       const id = textValue(event.tool_id);
       if (id !== undefined)
@@ -733,10 +749,13 @@ export const parseGeminiCliEvents = (
         clientFailures.push(`result_status:${String(event.status)}`);
     }
   }
-  for (const request of requests) {
-    const failure = geminiClientFailure(request, results.get(request.id));
+  for (const { id, tool } of invocations) {
+    const failure = geminiClientFailure(tool, results.get(id));
     if (failure !== undefined) clientFailures.push(failure);
   }
+  const requests = invocations.flatMap(({ request }) =>
+    request === undefined ? [] : [request],
+  );
   return {
     calls: uniqueCalls(
       requests.map((request) => {
