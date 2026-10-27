@@ -3,8 +3,9 @@ import {
   elfStringTableText,
 } from "../../domain/elfStringTable.js";
 import {
-  observeMzWindowsHeader,
   mzWindowsHeaderLayoutLimitation,
+  parseMzHeaderEvidence,
+  withMzWindowsHeaderSignature,
 } from "../../domain/dosMz.js";
 import { readElfSectionHeader } from "../../domain/elfSectionHeader.js";
 import { readElfProgramHeader } from "../../domain/elfProgramHeader.js";
@@ -293,15 +294,25 @@ export function* readPeSectionDirectory(
 ): Generator<NativeReadRequest, NativeSectionDirectory, Buffer> {
   const dos = new BinaryReader(yield request(fileSize, 0n, 64n), true);
   if (dos.u16(0) !== 0x5a4d) reject("Missing DOS MZ header");
-  const observed = observeMzWindowsHeader(dos.bytes, fileSize);
+  const evidence = parseMzHeaderEvidence(dos.bytes, fileSize);
+  const observed = evidence.windowsHeader;
   if (observed.state === "absent" || observed.state === "header-needed")
     return reject("MZ header does not declare a PE image");
+  // A signature already observed in the DOS prefix establishes the layout
+  // limitation even when the later COFF record is truncated.
+  if (observed.state === "declared" && observed.signature === "PE") {
+    const limitation = mzWindowsHeaderLayoutLimitation(observed);
+    if (limitation !== undefined)
+      throw new BinaryFormatFailure("unsupported", limitation);
+  }
   const pe = observed.offset;
   const coff = new BinaryReader(yield request(fileSize, BigInt(pe), 24n), true);
-  const confirmed = observeMzWindowsHeader(dos.bytes, fileSize, {
-    offset: pe,
-    bytes: coff.bytes,
-  });
+  const confirmed = withMzWindowsHeaderSignature(
+    dos.bytes,
+    fileSize,
+    evidence,
+    { offset: pe, bytes: coff.bytes },
+  ).windowsHeader;
   if (confirmed.state !== "declared" || confirmed.signature !== "PE")
     return reject("PE signature is invalid");
   const limitation = mzWindowsHeaderLayoutLimitation(confirmed);
