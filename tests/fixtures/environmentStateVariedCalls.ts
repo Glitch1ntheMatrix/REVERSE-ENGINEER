@@ -1,0 +1,120 @@
+import type { TimedCaptureRow } from "./analysisView.js";
+import { bookClock } from "./environmentStateWrites.js";
+import type { JsonValue } from "../../src/domain/jsonValue.js";
+
+type Entity = { readonly [key: string]: JsonValue };
+
+/** Two contact updates, the second sending only the email the first sent with a name and a city. */
+export const FEWER_MEMBERS_ROWS: readonly TimedCaptureRow[] = (() => {
+  const contact = (
+    id: number,
+    name: string,
+    city: string,
+    email: string,
+  ): Entity => ({ id, name, city, email });
+  const [ada, mina] = [
+    contact(1, "Ada Finch", "Porto", "ada@example.test"),
+    contact(2, "Mina Okafor", "Accra", "mina@example.test"),
+  ];
+  const adaMoved = contact(
+    1,
+    "Ada Finch-Lowe",
+    "Lisbon",
+    "ada.lowe@example.test",
+  );
+  const minaMail = { ...mina, email: "mina.o@example.test" };
+  return [
+    ["GET", "/api/contacts", [ada, mina]],
+    ["GET", "/api/contacts/1", ada],
+    ["GET", "/api/contacts/2", mina],
+    [
+      "PUT",
+      "/api/contacts/1",
+      adaMoved,
+      200,
+      {
+        name: "Ada Finch-Lowe",
+        city: "Lisbon",
+        email: "ada.lowe@example.test",
+      },
+    ],
+    ["GET", "/api/contacts/1", adaMoved],
+    ["PUT", "/api/contacts/2", minaMail, 200, { email: "mina.o@example.test" }],
+    ["GET", "/api/contacts/2", minaMail],
+    ["GET", "/api/contacts", [adaMoved, minaMail]],
+  ];
+})();
+
+/** Bundle creates: the first sends its order, the second leaves it to the application, which numbers it next. */
+export const NUMBERED_UNLESS_SENT_ROWS: readonly TimedCaptureRow[] = (() => {
+  const bundle = (id: number, name: string, order: number): Entity => ({
+    id,
+    name,
+    order,
+  });
+  const [alpha, bravo] = [bundle(1, "Alpha", 0), bundle(2, "Bravo", 1)];
+  const [charlie, delta] = [bundle(3, "Charlie", 5), bundle(4, "Delta", 6)];
+  return [
+    ["GET", "/api/bundles", [alpha, bravo]],
+    ["GET", "/api/bundles/1", alpha],
+    ["GET", "/api/bundles/2", bravo],
+    ["POST", "/api/bundles", charlie, 201, { name: "Charlie", order: 5 }],
+    ["GET", "/api/bundles/3", charlie],
+    ["GET", "/api/bundles", [alpha, bravo, charlie]],
+    ["POST", "/api/bundles", delta, 201, { name: "Delta" }],
+    ["GET", "/api/bundles/4", delta],
+    ["GET", "/api/bundles", [alpha, bravo, charlie, delta]],
+  ];
+})();
+
+/** Tasks marked done: each answer stamps `done_at` to the nanosecond, the read after it to the second. */
+export const DONE_CLOCK_ROWS: readonly TimedCaptureRow[] = (() => {
+  const task = (id: number, title: string): Entity => ({
+    id,
+    title,
+    done: false,
+    done_at: "0001-01-01T00:00:00Z",
+  });
+  const [trim, oil] = [task(1, "Trim the wicks"), task(2, "Order lamp oil")];
+  const done = (entity: Entity, at: number, fraction: string): Entity => ({
+    ...entity,
+    done: true,
+    done_at: bookClock(at).replace("Z", fraction),
+  });
+  return [
+    ["GET", "/api/tasks", [trim, oil]],
+    ["GET", "/api/tasks/1", trim],
+    ["GET", "/api/tasks/2", oil],
+    [
+      "PATCH",
+      "/api/tasks/1",
+      done(trim, 3, ".001234567Z"),
+      200,
+      { done: true },
+    ],
+    ["GET", "/api/tasks/1", done(trim, 3, "Z")],
+    ["PATCH", "/api/tasks/2", done(oil, 5, ".002345678Z"), 200, { done: true }],
+    ["GET", "/api/tasks/2", done(oil, 5, "Z")],
+  ];
+})();
+
+/** Tag PUTs: one leaves the owner out and the application clears it, the other sends it and keeps it. */
+export const PUT_CLEARS_ROWS: readonly TimedCaptureRow[] = (() => {
+  const tag = (id: number, name: string, owner: number | null): Entity => ({
+    id,
+    name,
+    owner,
+  });
+  const [inbox, bills] = [tag(1, "Inbox", 3), tag(2, "Bills", 3)];
+  const [triage, paid] = [tag(1, "Triage", null), tag(2, "Paid", 3)];
+  return [
+    ["GET", "/api/tags", [inbox, bills]],
+    ["GET", "/api/tags/1", inbox],
+    ["GET", "/api/tags/2", bills],
+    ["PUT", "/api/tags/1", triage, 200, { name: "Triage" }],
+    ["GET", "/api/tags/1", triage],
+    ["PUT", "/api/tags/2", paid, 200, { name: "Paid", owner: 3 }],
+    ["GET", "/api/tags/2", paid],
+    ["GET", "/api/tags", [triage, paid]],
+  ];
+})();

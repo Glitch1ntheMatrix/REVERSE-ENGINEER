@@ -796,7 +796,9 @@ past those deleted before the capture. Two `made-object` rules agree in their
 clocks and own members, and a count only the later call shows starts at the
 first object's value. Members either call sent are accepted, only those every call sent are
 required, and an echoed member a call left out takes the value that call stored
-(`body.defaults`). A member a create sent empty (`""`, `null`, `false`, `[]` or
+(`body.defaults`). A member one call sent and stored as sent, and another left
+out and the application numbered one past the others, takes the value a call
+sends, else that number (a `sequence` with `sent`). A member a create sent empty (`""`, `null`, `false`, `[]` or
 `{}`), as a form sends a field left as it was, is not required: a call that
 leaves it out is applied as sending that value (`body.blank`), unless a call
 that left it out showed a default, which it then keeps. A call may send it as any
@@ -859,13 +861,17 @@ is unchanged) must be a clock, a nested clock, an increment, a slug, a fresh `un
 value, a `stamp` of the acting user, a value `derived` from the one member it
 stores nowhere, a `reference` to the entity a sent member names (kept by a call that names the entity the field already repeats), a `composed` string whose parts read members it stored as sent
 or fields it left as they were and spell the value before the call too, or for
-an item action a `set` of a scalar to the value it showed, or the plan is
+an item action a `set` of a scalar to the value it showed, or, for a `PUT`, a
+member it left out that the application cleared to an empty value, which calls
+that leave it out then store (`body.defaults`), or the plan is
 `unexplained-change`; an increment, slug, stamp, derived
 value or set must hold for every call of the tool, and an action is served
 only once a call found what it sets already set. A write is served only
 with the query its first call sent, which serving applies to a call that
-leaves a parameter out and the catalog advertises as required. Every member the first call sent is required, except by `PATCH` and
-`POST` updates and members a create sent empty.
+leaves a parameter out and the catalog advertises as required. Every member every call sent is required, except by `PATCH` and
+`POST` updates and members a create sent empty. The state holds an update's
+clock as the first read of the entity after it spells the same instant, at a
+coarser precision too.
 
 A read on a line `query` answers is checked against the query evaluated over
 the replayed state. It covers the collection only when every parameter sorts or

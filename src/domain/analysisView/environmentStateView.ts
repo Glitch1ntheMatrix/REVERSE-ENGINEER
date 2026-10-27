@@ -246,6 +246,7 @@ const fieldRuleSchema = z.discriminatedUnion("rule", [
     rule: z.literal("sequence"),
     scope: z.enum(["collection", "type"]),
     start: z.number().int().exactOptional(),
+    sent: z.literal(true).exactOptional(),
   }),
   z.strictObject({ ...ruled, rule: z.literal("unique") }),
   z.strictObject({

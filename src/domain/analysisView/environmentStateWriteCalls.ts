@@ -228,11 +228,21 @@ export const refinedBody = (
   const accepted = later.accepted.filter(
     (member) => !body.accepted.includes(member),
   );
+  const held = body.defaults ?? [];
+  const defaults = [
+    ...held,
+    ...(later.defaults ?? []).filter(
+      (entry) => !held.some((kept) => kept.member === entry.member),
+    ),
+  ];
   return {
     ...body,
+    ...(defaults.length === 0 ? {} : { defaults }),
     // A later call may be the first to show the body repeating the path's id.
     identity: body.identity ?? later.identity,
     accepted: [...body.accepted, ...accepted],
+    // A member is required only when every call sent it.
+    required: body.required.filter((member) => later.required.includes(member)),
     fixed: [
       ...body.fixed,
       ...later.fixed.filter((entry) => !fixed.has(entry.member)),
