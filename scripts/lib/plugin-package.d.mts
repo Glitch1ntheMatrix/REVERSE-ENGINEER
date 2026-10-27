@@ -4,12 +4,14 @@ interface PackageManifest {
   devDependencies?: Record<string, string>;
   dependencies?: Record<string, string>;
   overrides?: Record<string, unknown>;
+  // npm manifests are extensible; preserve metadata outside this projection.
   [key: string]: unknown;
 }
 
 interface LockedPackage {
   version?: string;
   dev?: boolean;
+  // Keep unmodified integrity, resolution, platform, and other lock-entry facts.
   [key: string]: unknown;
 }
 
@@ -18,6 +20,7 @@ interface PackageLock {
   version: string;
   lockfileVersion: number;
   packages: Record<string, LockedPackage>;
+  // Preserve other npm lock metadata rather than dropping unfamiliar fields.
   [key: string]: unknown;
 }
 
