@@ -119,6 +119,38 @@ workflows, not billed model usage or a measured autonomous-agent task. They do
 not establish fewer model rounds or a generic analysis speedup. Actual provider
 work still reads the complete manifest, and schema discovery grows.
 
+## Global catalog compatibility
+
+The actual CI merge `10746a4e8f8c622357cf8dd529f98adc8bf06d2b` combines the feature
+with main parent `86d4a21215cb0fbafaf555b5c7d9fcda3f255d82`. Real SDK discovery,
+using the same complete contract registrations as the existing profile test, gives:
+
+| Explicit wire profiles         | Pure main bytes | CI merge bytes |
+| ------------------------------ | --------------: | -------------: |
+| Full input / full output       |       4,398,561 |      4,425,163 |
+| Compact input / compact output |         556,450 |        558,653 |
+| Compact input / output off     |         302,913 |        305,116 |
+| Full input / output off        |       1,047,039 |      1,052,239 |
+
+Input presentation defaults to compact; output presentation defaults to full.
+For frame-capped hosts, compact/off outputs are explicit compatibility choices.
+The bounded compatibility combinations retain the existing one-megabyte test
+limit and per-schema budgets. New selectors add 5,200 bytes with full inputs:
+2,699 input bytes and 379 description bytes on `inspect_android_package`, plus
+2,122 input bytes on the retained-view operation. Compact-input discovery grows
+2,203 bytes. These global discovery costs are distinct from the selected-family
+task token estimates above.
+
+This change crosses the old test assertion for full input with output off.
+That assertion was broader than its default-compact test name and the existing
+profile documentation: full inputs deliberately preserve complete guidance and
+can dominate the frame even without output schemas. The corrected test retains
+both compact-input frame limits, compares every full input schema with its named
+canonical advertisement under full/off outputs, preserves the entire tool set,
+and verifies that off removes only output advertisements. No production limit is
+raised and no full input validation/guidance is discarded. The owning guide now
+states this full-profile boundary explicitly.
+
 ## Verification boundaries and failed attempts
 
 The real Java regression exercises the existing raw/default-package class selector,
