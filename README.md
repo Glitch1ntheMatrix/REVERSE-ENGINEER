@@ -90,6 +90,10 @@ Setup supports Claude Code, Codex, Cursor, Gemini CLI, Grok Build and
 [installation and setup](docs/installation.md) for provider configuration and
 manual MCP registration.
 
+Claude Code and Codex also support a [REA plugin](docs/installation.md#agent-plugins-and-marketplaces)
+that bundles the MCP server and matching skill from one release. Marketplace
+installation requires the first npm release containing these plugin manifests.
+
 MCP uses compact input schemas by default to reduce context overhead. Set
 `REA_MCP_INPUT_SCHEMA_PROFILE=full` in your MCP registration when you need the
 complete advertised field guidance and nested validation details. Both profiles
