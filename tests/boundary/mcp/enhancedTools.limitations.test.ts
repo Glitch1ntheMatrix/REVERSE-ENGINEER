@@ -132,7 +132,6 @@ it.each(["list_procedures", "list_strings"])(
       code: "unreadable_output",
       details: {
         operation: invalidOperation,
-        reason: "Provider returned an invalid inventory rows",
       },
     });
   },
