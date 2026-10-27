@@ -1280,6 +1280,10 @@ pseudocode is never treated as original source or Hopper-equivalent text.
 
 ### Missing macOS native decompiler
 
+Ghidra's own `buildNatives` task (see [Ghidra](#ghidra)) works on both macOS
+architectures and writes to `build/os/<platform>/`. The manual recipes below
+install into `os/<platform>/` instead, which REA selects first.
+
 If `rea doctor --json` reports `native_decompiler` as missing on macOS x64,
 the extracted Ghidra archive may include the decompiler source without the
 macOS executable. For Ghidra 12.1.4, you can build it manually with an existing
@@ -1299,7 +1303,7 @@ The copy step requires the destination to be absent and preserves an existing
 decompiler. This recipe is specific to macOS x64: the
 [Ghidra 12.1.4 Makefile](https://github.com/NationalSecurityAgency/ghidra/blob/Ghidra_12.1.4_build/Ghidra/Features/Decompiler/src/decompile/cpp/Makefile)
 explicitly selects `-arch x86_64` on Darwin. For a Gradle
-build, follow the matching release's
+build, see [Ghidra](#ghidra) or the matching release's
 [native component instructions](https://github.com/NationalSecurityAgency/ghidra/blob/Ghidra_12.1.4_build/GhidraDocs/GettingStarted.md#building-native-components).
 REA accepts the matching executable under either `os/<platform>/` or
 `build/os/<platform>/`; it does not build the component during setup or diagnosis.
