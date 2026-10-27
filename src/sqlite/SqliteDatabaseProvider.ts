@@ -13,7 +13,6 @@ import type {
 } from "../domain/analysisErrorBase.js";
 import {
   AnalysisCancelledError,
-  AnalysisInputError,
   AnalysisOutputError,
   AnalysisResourceConstraintError,
 } from "../domain/analysisErrorCore.js";
@@ -30,7 +29,7 @@ import {
   DEFAULT_SQLITE_WORKER_TIMEOUT_MS,
   sqliteInspectionParameters,
 } from "../domain/sqlite/sqliteDatabase.js";
-import { isAbsolute } from "node:path";
+import { analysisInputErrorFromIssues } from "../domain/inputIssueProjection.js";
 import { PrivateRuntimeRoot } from "../process/PrivateRuntimeRoot.js";
 import {
   OwnedCommandFailure,
@@ -49,6 +48,7 @@ import { SQLITE_DATABASE_LIMITS } from "./SqliteDatabaseLimits.js";
 
 import {
   executeSqliteDatabaseWorker,
+  sqliteReplyFinalizationFailure,
   type SqliteWorkerLauncher,
 } from "./SqliteDatabaseWorkerExecution.js";
 
@@ -107,8 +107,7 @@ export class SqliteDatabaseProvider implements SqliteDatabasePort {
             input_bytes_per_inspection: SQLITE_DATABASE_LIMITS.inputBytes,
           },
           {
-            remediationAction:
-              "Retry after an active SQLite inspection completes.",
+            remediationAction: `The concurrent SQLite inspection allowance is ${String(SQLITE_DATABASE_LIMITS.concurrentInspections)}. This release has no runtime override. Waiting for an active inspection to finish can free a slot. worker_timeout_ms does not raise it. Retry after an active SQLite inspection completes.`,
           },
         ),
       );
@@ -285,7 +284,7 @@ export class SqliteDatabaseProvider implements SqliteDatabasePort {
         options?.signal,
       );
       phase = "worker";
-      const inspection = await executeSqliteDatabaseWorker({
+      const completed = await executeSqliteDatabaseWorker({
         input,
         root: root.path,
         snapshotPath: snapshot.snapshotPath,
@@ -305,18 +304,29 @@ export class SqliteDatabaseProvider implements SqliteDatabasePort {
       const validated = sqliteDatabaseSchema.safeParse({
         artifact: snapshot.artifact,
         wal: snapshot.wal,
-        ...inspection,
+        ...completed.inspection,
         worker_timeout_ms: workerTimeoutMs,
       });
       if (!validated.success)
-        throw new AnalysisOutputError(
-          operation,
-          "SQLite worker report dimensions or identity fields are invalid",
-          retainedOutput === undefined
-            ? undefined
-            : { capturedOutput: retainedOutput },
+        throw sqliteReplyFinalizationFailure(
+          new AnalysisOutputError(
+            operation,
+            "SQLite worker report dimensions or identity fields are invalid",
+            retainedOutput === undefined
+              ? undefined
+              : { capturedOutput: retainedOutput },
+          ),
+          completed.finalization,
         );
-      result = ok(createSqliteObservation(validated.data, input.path));
+      const execution = createSqliteObservation(validated.data, input.path);
+      result =
+        completed.finalization === undefined
+          ? ok(execution)
+          : err(
+              completed.finalization.retainPartialObservation(
+                completedSqliteEvidence(input, execution),
+              ),
+            );
     } catch (cause: unknown) {
       // A failure rethrown after retainCleanup carries no owner of its own;
       // keep the retained worker instead of discarding it.
@@ -534,14 +544,8 @@ const completedSqliteEvidence = (
 
 const validateSqliteInput = (input: InspectSqliteDatabaseInput): void => {
   const parsed = inspectSqliteDatabaseInputSchema.safeParse(input);
-  if (!parsed.success || !isAbsolute(input.path))
-    throw new AnalysisInputError(operation, undefined, [
-      {
-        path: ["path"],
-        reason: "invalid_format",
-        message: parsed.success
-          ? "path must be an absolute local filesystem path"
-          : parsed.error.message,
-      },
-    ]);
+  if (!parsed.success)
+    throw analysisInputErrorFromIssues(operation, parsed.error.issues, input, {
+      cause: parsed.error,
+    });
 };

@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,12 +13,11 @@ import { cliTest } from "../../support/cli/cliFixture.js";
 import {
   captureProcessScenarioFile,
   compareProcessEvidenceFiles,
-  projectProcessCliError,
 } from "../../../src/application/process/ProcessCli.js";
 import { createEvidence } from "../../../src/domain/evidence.js";
-import { ProcessCaptureError } from "../../../src/process/capture/ProcessCaptureError.js";
 import { PROCESS_PROVIDER } from "../../../src/domain/process/processEvidenceProvider.js";
 import { INVESTIGATION_EXAMPLES } from "../../../src/contracts/investigationExamples.js";
+import { observeProcessStartIdentity } from "../../../src/process/ProcessOwnershipObservation.js";
 import {
   analysisCliErrorEnvelopeSchema,
   analysisErrorProjectionSchema,
@@ -72,6 +71,66 @@ describe("documented process CLI workflow", () => {
       );
       expect(comparison.json).toMatchObject({
         operation: "compare_process_captures",
+      });
+    },
+    CLI_INTEGRATION_TIMEOUT_MS,
+  );
+});
+
+describe("process CLI cleanup errors", () => {
+  cliTest.skipIf(process.platform !== "darwin")(
+    "reports the retained capture root when platform-binary finalization cannot establish ownership",
+    async ({ cli }) => {
+      const root = await createTestTempDirectory("rea-process-cli-cleanup-");
+      const scenario = join(root, "scenario.json");
+      const marker = join(root, "target.pid");
+      await writeFile(
+        scenario,
+        JSON.stringify({
+          executable: "/bin/sh",
+          arguments: [
+            "-c",
+            'printf "%s" "$$" > "$1"; exec /bin/sleep 3',
+            "capture-cleanup-fixture",
+            marker,
+          ],
+          timeout_ms: 500,
+          idle_timeout_ms: 500,
+          finalization_ms: 100,
+        }),
+      );
+      const result = await cli.run({
+        arguments: ["capture-process", scenario, "--json"],
+        environment: { TMPDIR: root },
+      });
+      const targetPid = Number(await readFile(marker, "utf8"));
+      expect(Number.isSafeInteger(targetPid) && targetPid > 0).toBe(true);
+      // The fail-closed command deliberately leaves the platform binary alive.
+      // Observe its bounded natural exit before the temporary fixture is removed.
+      await expect
+        .poll(() => observeProcessStartIdentity(targetPid), {
+          timeout: 7_000,
+          interval: 25,
+        })
+        .toBeUndefined();
+      expect(result.exitCode, result.stdout || result.stderr).toBe(1);
+      const retained = (await readdir(root)).filter((name) =>
+        /^rea-process-(?!token-)/u.test(name),
+      );
+      expect(retained).toHaveLength(1);
+      const retainedRoot = retained[0];
+      if (retainedRoot === undefined) throw new Error("Missing retained root");
+      expect(result.json).toMatchObject({
+        code: "cleanup_incomplete",
+        message: expect.stringContaining(
+          "platform_binary_environment_withheld",
+        ),
+        details: {
+          resources: ["owned_process_group", join(root, retainedRoot)],
+          cleanup_report: {
+            temporary_root: { state: "unverified" },
+          },
+        },
       });
     },
     CLI_INTEGRATION_TIMEOUT_MS,
@@ -221,31 +280,6 @@ describe("process CLI environment key diagnostics", () => {
 });
 
 describe("process CLI evidence validation", () => {
-  it("preserves sanitized unknown-process IDs and reasons through CLI projection", () => {
-    const reason =
-      "process ownership token could not be read for 1 live process(es): environment_unavailable=1; live candidates 900=environment_unavailable";
-    const projected = projectProcessCliError(
-      new ProcessCaptureError("cleanup incomplete", {
-        reason: "cleanup_incomplete",
-        cleanup: { reason, resources: ["owned_process_group"] },
-        cleanupReport: {
-          owned_process_group: { state: "unverified", reason },
-          terminal_renderer: { state: "cleaned", reason: null },
-          temporary_root: { state: "cleaned", reason: null },
-        },
-      }),
-      "compare_process_captures",
-    );
-    expect(projected).toMatchObject({
-      code: "cleanup_incomplete",
-      details: {
-        cleanup_report: {
-          owned_process_group: { reason },
-        },
-      },
-    });
-  });
-
   it("captures the minimal executable-and-arguments scenario", async () => {
     const root = await createTestTempDirectory("rea-process-cli-");
     const scenario = join(root, "scenario.json");
