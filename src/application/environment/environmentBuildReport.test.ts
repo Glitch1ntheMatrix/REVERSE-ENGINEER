@@ -6,6 +6,7 @@ import {
   anonymousOrigin,
   credentialNamed,
   nameFromCaptureFile,
+  savedCredentialWarnings,
   scanCredentialNames,
   scanScenarioCredentialNames,
 } from "./environmentBuildReport.js";
@@ -275,6 +276,32 @@ describe("scanScenarioCredentialNames", () => {
     });
     expect(JSON.stringify(scanned)).not.toContain("k-2");
   });
+
+  it("scans each content event of a phase the capture recorded twice", () => {
+    const capture = scenarioCaptureFixture([
+      {
+        method: "GET",
+        url: "/api/session",
+        status: 200,
+        mediaType: "application/json",
+        body: '{"token":"t-1"}',
+      },
+    ]);
+    const content = capture.events.items.find(
+      (event) => event.kind === "network-content",
+    );
+    if (content === undefined) throw new Error("Fixture lacks content");
+    expect(
+      scanScenarioCredentialNames([
+        ...capture.events.items,
+        { ...content, sequence: 99 },
+      ]),
+    ).toEqual({
+      count: 2,
+      pointers: ["event 2 response /token", "event 3 response /token"],
+      skipped: NONE_SKIPPED,
+    });
+  });
 });
 
 describe("scanCredentialNames coverage", () => {
@@ -369,5 +396,114 @@ describe("nameFromCaptureFile", () => {
     expect(nameFromCaptureFile("/w/grafana.capture.json")).toBe("grafana");
     expect(nameFromCaptureFile("/w/My App.scoped.HAR")).toBe("my-app-scoped");
     expect(nameFromCaptureFile("/w/--.json")).toBe("");
+  });
+});
+
+it.each([
+  { text: "password=example", pointers: ["/password"] },
+  { text: "token=a&page=1&token=b", pointers: ["/token", "/token"] },
+  { text: "%70assword=encoded", pointers: ["/password"] },
+  { text: "flag&password=example", pointers: ["/password"] },
+])(
+  "reviews retained form names without a recorded media type: $text",
+  ({ text, pointers }) => {
+    const capture = scenarioCaptureFixture(
+      [
+        {
+          method: "POST",
+          url: "/api/session",
+          status: 200,
+          mediaType: "application/json",
+          body: "{}",
+          requestBody: text,
+        },
+      ],
+      { request_body: true, response_body: true, header_values: true },
+    );
+    expect(scanScenarioCredentialNames(capture.events.items)).toEqual({
+      count: pointers.length,
+      pointers: pointers.map((pointer) => `event 1 request ${pointer}`),
+      skipped: NONE_SKIPPED,
+    });
+  },
+);
+
+it.each([
+  { mimeType: "text/plain", count: 1 },
+  { mimeType: "text/markdown", count: 1 },
+  { mimeType: "application/octet-stream", count: 2 },
+  { mimeType: "", count: 2 },
+])(
+  "prefers JSON-like media types before form fallback ($mimeType)",
+  ({ mimeType, count }) => {
+    const json = record(7, undefined, undefined);
+    const plain = record(8, undefined, undefined);
+    (json.reported as { request: { postData: unknown } }).request.postData = {
+      mimeType: "",
+      text: '{"name":"password=example","token":"actual"}',
+    };
+    (plain.reported as { request: { postData: unknown } }).request.postData = {
+      mimeType,
+      text: "password=example",
+    };
+    expect(scanCredentialNames([json, plain])).toEqual({
+      count,
+      pointers: [
+        "record 7 request /token",
+        ...(count === 2 ? ["record 8 request /password"] : []),
+      ],
+      skipped: NONE_SKIPPED,
+    });
+  },
+);
+
+describe("savedCredentialWarnings", () => {
+  const entry = (name: string, secret?: boolean) => ({
+    name,
+    json_pointer: "/x",
+    ...(secret === undefined ? {} : { secret }),
+  });
+
+  it("points at saved values named like credentials that are not marked secret", () => {
+    expect(
+      savedCredentialWarnings({
+        actions: [
+          { action: "goto" },
+          {
+            action: "request",
+            save: [
+              entry("item_id"),
+              entry("access_token"),
+              entry("api_key", true),
+            ],
+          },
+          {
+            action: "click",
+            save_response: { save: [entry("password", false), entry("list")] },
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        code: "credential-named-saved-values",
+        message: expect.stringContaining("2 saved values"),
+        pointers: [
+          "/parameters/actions/1/save/1",
+          "/parameters/actions/2/save_response/save/0",
+        ],
+      },
+    ]);
+  });
+
+  it("warns about nothing when every credential-named value is secret, or the parameters are not a scenario", () => {
+    expect(
+      savedCredentialWarnings({
+        actions: [
+          { action: "request", save: [entry("token", true), entry("id")] },
+        ],
+      }),
+    ).toEqual([]);
+    expect(savedCredentialWarnings({ operation: "har" })).toEqual([]);
+    expect(savedCredentialWarnings(undefined)).toEqual([]);
   });
 });

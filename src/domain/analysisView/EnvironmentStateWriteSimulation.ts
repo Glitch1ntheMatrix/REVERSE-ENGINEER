@@ -1,3 +1,5 @@
+import { CapturedWriteCompletion } from "./environmentStateWriteCompletion.js";
+import type { JsonValue } from "../jsonValue.js";
 import {
   at,
   changesState,
@@ -6,6 +8,7 @@ import {
   listsAll,
   normalizedPath,
   type JsonObject,
+  type ParsedRequestBody,
   type StateEntity,
   type StateRecordFacts,
   type StateToolFacts,
@@ -112,6 +115,7 @@ export class EnvironmentStateWriteSimulation {
   readonly #touchedSince: PendingTargets = new Map();
   /** Timeline indexes of writes the gate does not model. */
   readonly #unmodelledAt: number[] = [];
+  readonly #writeCompletion: CapturedWriteCompletion;
   readonly #history: WriteHistory = {
     touched: this.#touched,
     pending: this.#touchedSince,
@@ -133,6 +137,7 @@ export class EnvironmentStateWriteSimulation {
 
   constructor(input: WriteSimulationInput) {
     this.#input = input;
+    this.#writeCompletion = new CapturedWriteCompletion(input.io.retain);
     this.#state = new SimulatedState(input.entities, input.documents);
     this.#unseen = new UnseenEntities(input.entities, {
       state: this.#state,
@@ -217,13 +222,39 @@ export class EnvironmentStateWriteSimulation {
         sequences: new Map(),
         steady: new Set(),
         unstamped: new Set(),
+        kept: new Set(),
+        fixedWidth: new Map(),
+        ampersands: new Map(),
         linked: link.collection,
       });
     }
+    // Reads may finish after writes with the same or a later start: index the
+    // complete capture before replay so ordinal tie-breaking cannot create proof.
+    for (const record of this.#input.records)
+      if (this.#isWrite(record))
+        this.#writeCompletion.write(
+          record.path,
+          this.#input.chronology.endMs(record),
+          this.#input.chronology.startMs(record),
+        );
     this.#input.records.forEach((record, index) => this.#step(record, index));
-    return [...this.#drafts.values()].map((draft) =>
-      writeVerdict(draft, this.#input),
+    const views = new Map(
+      this.views([...this.#input.views.values()]).map((view) => [
+        view.tool,
+        view,
+      ]),
     );
+    return [...this.#drafts.values()].map((draft) => {
+      // A view that became recorded cannot supply proof for a served write.
+      let kept = 0;
+      for (const ordinal of draft.confirmed) {
+        const tool = this.#toolOf.get(ordinal)?.name;
+        if (tool !== undefined && views.get(tool)?.shape !== "recorded")
+          draft.confirmed[kept++] = ordinal;
+      }
+      draft.confirmed.length = kept;
+      return writeVerdict(draft, this.#input);
+    });
   }
 
   #step(record: StateRecordFacts, index: number): void {
@@ -244,13 +275,25 @@ export class EnvironmentStateWriteSimulation {
     );
   }
 
-  #context(writer: string): EffectContext {
+  #context(
+    writer: string,
+    request?: { readonly ordinal: number; readonly body: ParsedRequestBody },
+  ): EffectContext {
     return {
       isWrite: (record) => this.#isWrite(record),
       state: this.#state,
-      io: this.#input.io,
+      io:
+        request === undefined
+          ? this.#input.io
+          : {
+              ...this.#input.io,
+              requestBody: (ordinal) =>
+                ordinal === request.ordinal
+                  ? request.body
+                  : this.#input.io.requestBody(ordinal),
+            },
       records: this.#input.records,
-      timed: this.#input.timed,
+      chronology: this.#input.chronology,
       viewOf: (ordinal) => {
         const view = this.#input.views.get(
           this.#toolOf.get(ordinal)?.name ?? "",
@@ -303,25 +346,34 @@ export class EnvironmentStateWriteSimulation {
         record.query,
       );
     const step: WriteStep = { record, index, tool, observeOnly, pinned };
-    const context = this.#context(tool.name);
     const { address } = draft.plan;
-    const results =
-      address !== undefined && address.by !== "action"
+    const bulk = address !== undefined && address.by !== "action";
+    const apply = (body?: ParsedRequestBody): void => {
+      const context = this.#context(
+        tool.name,
+        body === undefined ? undefined : { ordinal: record.ordinal, body },
+      );
+      const results = bulk
         ? applyBulk(context, draft, step)
         : [APPLY[effect](context, draft, step)];
-    // A call of a tool whose plan was never built, or one a linked plan does not place, is no more modelled than one of a tool without a plan.
-    if (
-      results.some((result) => result.kind === "unknown") &&
-      (!built(draft) || draft.linked !== undefined)
-    )
-      this.#unseen.unplanned(index);
-    for (const result of results)
-      this.#settle(result, {
-        index,
-        tool: tool.name,
-        path: record.path,
-        end: record.end,
-      });
+      // A call of a tool whose plan was never built, or one a linked plan does not place, is no more modelled than one of a tool without a plan.
+      if (
+        results.some((result) => result.kind === "unknown") &&
+        (!built(draft) || draft.linked !== undefined)
+      )
+        this.#unseen.unplanned(index);
+      for (const result of results)
+        this.#settle(result, {
+          index,
+          tool: tool.name,
+          path: record.path,
+          end: this.#input.chronology.endMs(record),
+        });
+    };
+    // Item deletes use their path; calls outside a built plan's query never interpret their body.
+    if (pinned && (effect !== "delete" || bulk))
+      this.#input.io.withRequestBody(record.ordinal, apply);
+    else apply();
   }
 
   /** Attribute an applied effect to its tool; a recorded outcome is the state's new baseline; an unknown one taints. */
@@ -331,7 +383,7 @@ export class EnvironmentStateWriteSimulation {
       readonly index: number;
       readonly tool: string;
       readonly path: string;
-      readonly end: number;
+      readonly end: number | undefined;
     },
   ): void {
     if (result.kind === "unknown") {
@@ -388,6 +440,7 @@ export class EnvironmentStateWriteSimulation {
   /** Whether an item read shows an entity an unmodelled write made, or one left unknown, again rather than checks it. */
   #resynced(view: StateView, record: StateRecordFacts, index: number): boolean {
     if (view.shape !== "item") return false;
+    if (this.#writeOverlapsRead(record)) return true;
     const adopted = this.#unseen.adopt(view, { record, index });
     if (adopted !== undefined) {
       this.#taint.known(adopted.type, adopted.collection, adopted.id);
@@ -397,7 +450,14 @@ export class EnvironmentStateWriteSimulation {
     if (!this.#taint.unknown(view.type, collection, id)) return false;
     // A read begun while a modelled write to the entity still ran may show either state, so it neither checks nor shows it.
     const target = entityTarget(view.type, collection, id);
-    if (runningAt(this.#touchedSince, target, record.start)) return true;
+    if (
+      runningAt(
+        this.#touchedSince,
+        target,
+        this.#input.chronology.startMs(record),
+      )
+    )
+      return true;
     // A failed read that is no absence shows nothing of the entity, so it stays unknown for a usable read.
     if (!succeeded(record) && !isAbsence(record.status)) return true;
     const entity = this.#state.entity(view.type, collection, id);
@@ -411,7 +471,11 @@ export class EnvironmentStateWriteSimulation {
     return true;
   }
 
-  #check(view: StateView, record: StateRecordFacts): CheckOutcome | undefined {
+  #check(
+    view: StateView,
+    record: StateRecordFacts,
+    comparisonBody?: (body: JsonValue) => JsonValue,
+  ): CheckOutcome | undefined {
     if (view.shape === "recorded") return undefined;
     const line = this.#line(view, record);
     if (view.shape !== "item" && line === undefined) return undefined;
@@ -443,7 +507,13 @@ export class EnvironmentStateWriteSimulation {
     const minted = view.per_response_members;
     return withBodies(this.#input.io.withBody, ordinals, (served, body) => {
       const check = {
-        body: body === undefined ? body : withoutMembers(body, minted),
+        body:
+          body === undefined
+            ? body
+            : withoutMembers(
+                comparisonBody === undefined ? body : comparisonBody(body),
+                minted,
+              ),
         base: served === undefined ? served : withoutMembers(served, minted),
         idField: this.#types.get(view.type)?.id_field ?? "",
         volatile: this.#input.volatileOf(view.type),
@@ -479,10 +549,16 @@ export class EnvironmentStateWriteSimulation {
   #read(record: StateRecordFacts, index: number, tool: StateToolFacts): void {
     const original = this.#input.views.get(tool.name);
     if (original === undefined) return;
-    let view = this.#viewOf(original);
+    let view = this.#sorted.comparisonView(this.omitted.view(original));
     if (projectedRead(view, record, this.#input.io)) return;
+    if (this.#writeOverlapsRead(record)) return;
     const borrowers = this.#observations.get(record.ordinal);
-    if (!borrowers && this.#resynced(view, record, index)) return;
+    if (
+      this.#viewOf(original).shape !== "recorded" &&
+      !borrowers &&
+      this.#resynced(view, record, index)
+    )
+      return;
     let outcome = this.#check(view, record);
     if (outcome === undefined) return;
     let keys = [...outcome.targets, ...outcome.unheld];
@@ -490,19 +566,35 @@ export class EnvironmentStateWriteSimulation {
       targets.some(
         (key) =>
           this.#taint.tainted(key) ||
-          runningAt(this.#touchedSince, key, record.start),
+          runningAt(
+            this.#touchedSince,
+            key,
+            this.#input.chronology.startMs(record),
+          ),
       );
     if (blocked(keys)) return;
     // A read the gate counts can show the view lists a written array sorted, or rule that out.
     outcome = this.#sorted.retry(
       view,
       { record, outcome },
-      (candidate) => this.#check(candidate, record),
+      (candidate, comparisonBody) =>
+        this.#check(candidate, record, comparisonBody),
       blocked,
     );
     view = this.#viewOf(original);
     keys = [...outcome.targets, ...outcome.unheld];
+    if (blocked(keys)) return;
     let exercised = exercisedBy(this.#touched, keys, borrowers);
+    if (view.shape === "recorded") {
+      // Retiring a view withdraws ordering proof, not a remaining mismatch in values.
+      if (!outcome.pass)
+        this.#contradictOthers(
+          exercised,
+          record,
+          interference(this.#history, outcome),
+        );
+      return;
+    }
     if (borrowers !== undefined) {
       this.omitted.keep(view, outcome);
       if (!outcome.pass)
@@ -582,6 +674,15 @@ export class EnvironmentStateWriteSimulation {
         this.#placed.add(name);
     }
     return shown.unseen;
+  }
+
+  /** An overlapping captured write cannot supply a stable read baseline. */
+  #writeOverlapsRead(read: StateRecordFacts): boolean {
+    return this.#writeCompletion.runningAt(
+      read.path,
+      this.#input.chronology.startMs(read),
+      this.#input.chronology.endMs(read),
+    );
   }
 
   #unmodelled(path: string, index: number): void {

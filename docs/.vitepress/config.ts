@@ -37,6 +37,7 @@ export default defineConfig({
           { text: "PE TLS/load config", link: "/pe-load-config" },
           { text: "ELF notes", link: "/elf-notes" },
           { text: "Apple IPS crash reports", link: "/apple-ips" },
+          { text: "Linux kernel modules", link: "/kernel-modules" },
           { text: "CPython pyc files", link: "/python-pyc" },
           { text: "Erlang BEAM", link: "/erlang-beam" },
           {
@@ -52,7 +53,11 @@ export default defineConfig({
             text: "Web network captures",
             link: "/web-network-captures",
           },
-          { text: "Agent environments", link: "/agent-environments" },
+          {
+            text: "Build RL environments",
+            link: "/agent-environments-quickstart",
+          },
+          { text: "Environment reference", link: "/agent-environments" },
           { text: "Electron observation", link: "/electron-observation" },
           { text: "Electron fuses", link: "/electron-fuses" },
           { text: "Process capture", link: "/process-capture" },

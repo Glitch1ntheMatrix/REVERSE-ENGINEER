@@ -40,21 +40,50 @@ const isObjectArray = (value: unknown): value is Record<string, unknown>[] =>
   value.length > 0 &&
   value.every(
     (item) => typeof item === "object" && item !== null && !Array.isArray(item),
-  );
+  ) &&
+  value.some((item) => Object.keys(item).length > 0);
+
+const isWordCharacter = (character: string | undefined): boolean =>
+  character !== undefined && /[\p{L}\p{N}]/u.test(character);
+
+/** Underscore runs between word characters cannot open or close emphasis. */
+const escapeInlineSyntax = (
+  match: string,
+  offset: number,
+  text: string,
+): string =>
+  match.startsWith("_") &&
+  isWordCharacter(text[offset - 1]) &&
+  isWordCharacter(text[offset + match.length])
+    ? match
+    : match.replace(/./g, "\\$&");
 
 const escapeTableCell = (value: string): string =>
   value
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/\\/g, "\\\\")
-    .replace(/\|/g, "\\|")
+    .replace(/[\\|`*[\]~]|_+/g, escapeInlineSyntax)
     .replace(/\r\n|\r|\n/g, "<br>");
+
+/** Heading and paragraph facts are literal data, including block syntax. */
+const escapeMarkdownText = (value: string): string =>
+  escapeTableCell(value)
+    .replace(/#/g, "\\#")
+    .replace(/^(\s*)([-+=])/, "$1\\$2")
+    .replace(/^(\s*\d{1,9})([.)])(?=\s)/, "$1\\$2")
+    .replace(/^[ \t]+/, (indent) =>
+      indent.replace(/ /g, "&#32;").replace(/\t/g, "&#9;"),
+    );
+
+const markdownHeading = (path: readonly string[]): string =>
+  `## ${escapeMarkdownText(path.join("."))}\n\n`;
 
 const renderTable = (
   headers: readonly string[],
   rows: readonly string[][],
 ): string => {
+  if (headers.length === 0) return "";
   const escapedHeaders = headers.map(escapeTableCell);
   const widths = escapedHeaders.map((header) => header.length);
   for (const row of rows) {
@@ -105,9 +134,14 @@ const formatObjectTable = (
         seen.add(key);
         headers.push(key);
       }
+  if (headers.length === 0) return markdownCell(items);
   return renderTable(
     headers,
-    items.map((item) => headers.map((key) => markdownCell(item[key]))),
+    items.map((item) =>
+      headers.map((key) =>
+        markdownCell(Object.hasOwn(item, key) ? item[key] : undefined),
+      ),
+    ),
   );
 };
 
@@ -117,13 +151,13 @@ const formatMarkdown = (
 ): string => {
   if (value == null && path.length === 0) return "";
   if (isScalar(value)) {
-    if (path.length === 0) return String(value);
-    return `## ${path.join(".")}\n\n${String(value)}`;
+    if (path.length === 0) return escapeMarkdownText(String(value));
+    return `${markdownHeading(path)}${escapeMarkdownText(String(value))}`;
   }
   if (Array.isArray(value)) {
     if (isObjectArray(value)) {
       const table = formatObjectTable(value);
-      return path.length === 0 ? table : `## ${path.join(".")}\n\n${table}`;
+      return path.length === 0 ? table : `${markdownHeading(path)}${table}`;
     }
     return formatMarkdown(markdownCell(value), path);
   }
@@ -142,8 +176,9 @@ const formatMarkdown = (
   return entries
     .map(([key, child]) => {
       const childPath = [...path, key];
-      const heading = `## ${childPath.join(".")}\n\n`;
-      if (isScalar(child)) return `${heading}${String(child)}`;
+      const heading = markdownHeading(childPath);
+      if (isScalar(child))
+        return `${heading}${escapeMarkdownText(String(child))}`;
       if (isObjectArray(child)) return `${heading}${formatObjectTable(child)}`;
       if (
         typeof child === "object" &&
@@ -155,7 +190,7 @@ const formatMarkdown = (
           ? `${heading}${formatKeyValueTable(nested)}`
           : formatMarkdown(nested, childPath);
       }
-      return `${heading}${markdownCell(child)}`;
+      return `${heading}${escapeMarkdownText(markdownCell(child))}`;
     })
     .join("\n\n");
 };

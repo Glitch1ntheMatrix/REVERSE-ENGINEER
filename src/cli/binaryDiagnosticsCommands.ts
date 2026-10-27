@@ -1,3 +1,5 @@
+import { projectCliAnalysisResult } from "./projectCliAnalysisResult.js";
+import { inspectDevicetreeInputSchema } from "../domain/firmware/devicetree.js";
 import { inspectPeLoadConfigInputSchema } from "../domain/native/peLoadConfig.js";
 import { inspectByteEntropyInputSchema } from "../domain/native/byteEntropy.js";
 import { z } from "incur";
@@ -7,6 +9,8 @@ import {
   createBinaryLayoutService,
   createElfNotesService,
   createAppleIpsService,
+  createDevicetreeService,
+  createKernelModuleService,
   createPeLoadConfigService,
   createPeResourcesService,
   createPeCertificatesService,
@@ -26,6 +30,7 @@ import { inspectPeImportsInputSchema } from "../domain/native/peImports.js";
 import { inspectNativeExportsInputSchema } from "../domain/native/nativeExports.js";
 import { inspectElfNotesInputSchema } from "../domain/native/elfNotes.js";
 import { inspectAppleIpsInputSchema } from "../domain/native/appleIps.js";
+import { inspectKernelModuleInputSchema } from "../domain/native/kernelModule.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import { finishAnalysisCommand } from "./finishAnalysisCommand.js";
 import { localPathStringSchema } from "../domain/localPath.js";
@@ -72,7 +77,7 @@ export const registerBinaryDiagnosticsCommands = (
               "rea-elf-notes",
               "inspect_elf_notes",
               signal,
-            ),
+            ).then(projectCliAnalysisResult),
         );
       }),
   });
@@ -116,7 +121,44 @@ export const registerBinaryDiagnosticsCommands = (
               "rea-apple-ips",
               "inspect_apple_ips",
               signal,
-            ),
+            ).then(projectCliAnalysisResult),
+        );
+      }),
+  });
+  cli.command(CLI_COMMANDS.inspectKernelModule, {
+    description:
+      "Inspect Linux kernel module metadata without executing the module",
+    args: z.object({
+      path: localPathStringSchema.describe(
+        "Local ELF32/ELF64 kernel module or compressed .ko container",
+      ),
+    }),
+    options: z.object({
+      maxFileBytes: inspectKernelModuleInputSchema.shape.max_file_bytes,
+      maxEntries: inspectKernelModuleInputSchema.shape.max_entries,
+    }),
+    run: ({ args, options }) =>
+      withCommandCancellation(async (signal) => {
+        const kernelModule = createKernelModuleService();
+        return await logCliCommand(
+          logger,
+          CLI_COMMANDS.inspectKernelModule,
+          async () =>
+            finishAnalysisCommand(
+              () =>
+                kernelModule.inspect(
+                  {
+                    path: absoluteCallerPath(args.path),
+                    max_file_bytes: options.maxFileBytes,
+                    max_entries: options.maxEntries,
+                  },
+                  { signal },
+                ),
+              kernelModule,
+              "rea-kernel-module",
+              "inspect_kernel_module",
+              signal,
+            ).then(projectCliAnalysisResult),
         );
       }),
   });
@@ -151,7 +193,7 @@ export const registerBinaryDiagnosticsCommands = (
               "rea-pe-load-config",
               "inspect_pe_load_config",
               signal,
-            ),
+            ).then(projectCliAnalysisResult),
         );
       }),
   });
@@ -189,7 +231,7 @@ export const registerBinaryDiagnosticsCommands = (
             "rea-byte-entropy",
             "inspect_byte_entropy",
             signal,
-          );
+          ).then(projectCliAnalysisResult);
         }),
       ),
   });
@@ -224,7 +266,7 @@ export const registerBinaryDiagnosticsCommands = (
               "rea-pe-certificates",
               "inspect_pe_certificates",
               signal,
-            ),
+            ).then(projectCliAnalysisResult),
         );
       }),
   });
@@ -259,7 +301,7 @@ export const registerBinaryDiagnosticsCommands = (
               "rea-pe-imports",
               "inspect_pe_imports",
               signal,
-            ),
+            ).then(projectCliAnalysisResult),
         );
       }),
   });
@@ -294,7 +336,56 @@ export const registerBinaryDiagnosticsCommands = (
               "rea-pe-resources",
               "inspect_pe_resources",
               signal,
-            ),
+            ).then(projectCliAnalysisResult),
+        );
+      }),
+  });
+  cli.command(CLI_COMMANDS.inspectDevicetree, {
+    description: "Inspect a flattened devicetree blob without executing it",
+    args: z.object({
+      path: localPathStringSchema.describe("Local flattened devicetree image"),
+    }),
+    options: z.object({
+      maxFileBytes: inspectDevicetreeInputSchema.shape.max_file_bytes.describe(
+        "Maximum FDT file size in bytes (default 4194304)",
+      ),
+      maxNodes: inspectDevicetreeInputSchema.shape.max_nodes.describe(
+        "Maximum number of device-tree nodes (default 8192)",
+      ),
+      maxProperties: inspectDevicetreeInputSchema.shape.max_properties.describe(
+        "Maximum number of device-tree properties (default 32768)",
+      ),
+      maxDepth: inspectDevicetreeInputSchema.shape.max_depth.describe(
+        "Maximum device-tree nesting depth (default 64)",
+      ),
+      ...analysisEvidenceDeliveryOptions,
+    }),
+    run: ({ args, options }) =>
+      withCommandCancellation(async (signal) => {
+        const devicetree = createDevicetreeService();
+        return await logCliCommand(
+          logger,
+          CLI_COMMANDS.inspectDevicetree,
+          async () =>
+            deliverCliAnalysisEvidence({
+              run: () =>
+                devicetree.inspect(
+                  {
+                    path: absoluteCallerPath(args.path),
+                    max_file_bytes: options.maxFileBytes,
+                    max_nodes: options.maxNodes,
+                    max_properties: options.maxProperties,
+                    max_depth: options.maxDepth,
+                  },
+                  { signal },
+                ),
+              service: devicetree,
+              providerId: "rea-devicetree",
+              operation: "inspect_devicetree",
+              signal,
+              detail: options.detail,
+              evidenceOutput: options.evidence_output,
+            }),
         );
       }),
   });

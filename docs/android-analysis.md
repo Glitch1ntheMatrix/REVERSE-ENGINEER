@@ -30,8 +30,9 @@ code units; follow `coverage.next_offset`. The page preserves `source_status` an
 `reported_total_bytes`: exhausting retained text does not make a partial decoded
 manifest complete. Complete source Evidence remains exportable under the existing
 session lifetime. Servers without retention reject summary before starting JADX.
-One-shot CLI output remains complete. Older servers require the existing complete
-request after schema discovery. APK authenticity and runtime behavior remain
+One-shot CLI output remains complete by default. Select `--detail summary` with
+`--evidence_output /local/capture.json` to retain complete Evidence before returning
+a linked view. Older servers require the existing complete request after schema discovery. APK authenticity and runtime behavior remain
 unverified.
 
 ## Manifest component projection
@@ -75,6 +76,61 @@ Provider authorities and all inventory dimensions are bounded. `status:
 capacity limitation appears only when an actual collection limit was reached.
 The projection does not merge manifests, expand resource references, or
 observe runtime enabled/export state.
+
+`enabled` and `grant_uri_permissions` report only literal component-level
+`android:enabled` and provider-level `android:grantUriPermissions` declarations.
+They are `null` when absent or not a literal boolean; missing attributes are not
+filled from application defaults. A nonliteral declaration gets a limitation.
+`process` preserves the exact component-level `android:process` spelling (including
+empty or symbolic values), or `null` when absent or omitted under the inventory-wide
+1 MiB copy budget. Neither field resolves resources, merges manifest values or
+establishes the effective runtime process or enabled state. The exact boolean
+attributes are retained in `enabled_declaration` and
+`grant_uri_permissions_declaration`, including resource references.
+
+`intent_filters` preserves each filter's source ordinal, exact priority spelling,
+actions, categories and individual data declarations (scheme, host, port, path,
+path prefix/pattern/advanced pattern/suffix and MIME type). These are declarations,
+not computed Android matching rules. `meta_data` lists names; values remain in the
+complete decoded manifest. Component, filter, data and metadata `location` values
+use one-based lines/columns and UTF-16 offsets into that manifest. A component's
+`declaration_index` preserves its original declaration ordinal, including gaps.
+
+`declaration_coverage` distinguishes complete, partial and unknown observations.
+Historical Evidence omits newly introduced fields and defaults coverage to
+`unknown`; omission never establishes absence. Current records contain the fields,
+with null for absent or unresolved scalar declarations. The inventory retains at
+most 32 filters and 64 nested action/category/data/metadata records per component,
+and shares a 1 MiB structured-value copy budget across components. Omitted values
+or unsupported filter constructs mark coverage partial and include a limitation;
+complete retained manifest text remains accessible.
+
+For a small answer, select `detail: "summary"` with an explicit view:
+
+```json
+{
+  "kind": "android",
+  "facet": "components",
+  "actions": ["android.provider.Telephony.SMS_RECEIVED"],
+  "fields": ["name", "permission", "enabled", "process", "intent_filters"],
+  "offset": 0,
+  "limit": 16
+}
+```
+
+The same JSON works with CLI `--view` or retained `inspect_analysis_view`.
+`kinds`, `names` and `actions` use exact matching; names accept either the recorded
+declared or resolved name, actions match any requested action, and different
+filters combine with AND. `exported` matches only explicit declarations, keeping
+`exported_default` separate. Empty selectors match nothing. Every selected row
+retains its parent-array `source_index` and `declaration_coverage`; source coverage,
+parent identity and limitations remain alongside the page. Follow
+`coverage.next_offset`. The 1 MiB projection budget can shorten a page; a single
+oversized row requires fewer selected fields. Exhausting a partial source does
+not establish complete manifest coverage. `facet: "component-summary"` applies
+the same filters and counts kinds, declaration coverage and explicit/default
+exported values separately. Both adapters use the same retained projection;
+repeated pages do not reload JADX.
 
 The service `foreground_service_type` field preserves the declared attribute,
 including an empty value or surrounding spaces; `null` means the attribute is
@@ -194,6 +250,21 @@ queries accept the same `overload_index`; the bridge resolves the selected
 method node and the result reports its index and displayed signature. These
 indices are tied to the current artifact and engine, not stable across builds.
 
+`inspect_android_class` also reports `dex_static_value` for each `static final`
+field whose class definition encodes a value in its DEX static values, so
+compile-time constants are readable even when the class has no `<clinit>`.
+Each value is typed: `boolean`, `byte`, `short`, `char` (UTF-16 code unit) and
+`int` values are JSON booleans or numbers, while `long`, `float` and `double`
+values are strings holding Java's text for the value, so 64-bit values stay
+exact. The field reports `null` when no value is encoded, the encoded value is
+null or of another kind, or the field is not `static final`. The value is read from parsed
+metadata without generating source, and a static initializer can still assign
+the field; use `inspect_android_method` on `<clinit>` for that evidence.
+Only `inspect_android_class` asks the bridge for these values.
+`inspect_android_method` and `trace_android_references` read the member-only
+class summary, so large encoded strings cannot push their member lookup past
+the 8 MiB protocol frame limit.
+
 Smali fallbacks select one complete block using the original method name and DEX
 descriptor, before applying the source byte limit. This preserves the selected
 overload even when Java code generation renames a method. If the selected Java
@@ -214,6 +285,70 @@ Static initializers (`<clinit>`) return smali with the
 instructions into field declarations, leaving an empty or incomplete method
 body. The selected method's disassembly preserves those instructions and retains
 the same source byte limit and explicit truncation reporting.
+
+## Apply an R8/ProGuard mapping
+
+Release builds shrunk by R8 or ProGuard rename classes and members. Select the
+build's `mapping.txt` with `mapping_path` on `inspect_android_class` or
+`inspect_android_method`, or `--mapping-path` on the matching CLI command:
+
+```sh
+rea inspect-android-class /path/Example.apk a.b --mapping-path /path/mapping.txt \
+  --detail summary --evidence_output /tmp/class-evidence.json
+```
+
+For agent workflows, select `detail: "summary"` on class and method inspection.
+It preserves the complete normalized member inventory or selected method body,
+including mapping annotations, while retaining duplicate raw provider calls in
+the complete parent Evidence. The reply links that parent's identity and digest;
+export it with `export_evidence_bundle` or read its summary again through
+`inspect_analysis_view`. CLI summaries require `--evidence_output` and return
+the portable bundle path. Omitted or `complete` detail preserves complete inline
+Evidence. Search and reference operations retain their existing contracts.
+Symbol summary views admit at most **1 MiB**, including view context. An admitted
+method's source can already consume that amount; a larger combined summary
+fails explicitly instead of silently truncating facts. MCP refusal includes
+the retained parent ID. Select complete detail, or inspect one method rather
+than a whole class, when the requested summary does not fit.
+
+The mapping path must be absolute. Selectors still take the observed names, such as
+`a.b`, and observed rows are unchanged. The result adds one `mapping` block with
+the file's path, SHA-256 and size, the header values the file reports
+(`compiler`, `compiler_version`, `min_api`, `map_version`, `pg_map_id`,
+`pg_map_hash`), valid record counts and up to 16 malformed line samples. Its
+`symbols` list has one entry per observed class, inner class, method and field;
+`inspect_android_method` lists the class and the selected method. `coverage`
+counts each resolution status. With summary delivery, these unchanged facts are
+under the view's `summary` field; the view separately reports source coverage.
+
+Lookups use the bridge's raw DEX names, not JADX display aliases such as a
+renamed reserved word. Each symbol resolves as:
+
+- `mapped`: exactly one record matches. A class needs one record for its raw
+  name (`verified_by: "class"`). A method must also match its DEX prototype
+  (`"descriptor"`) and a field its DEX type (`"type"`). R8 residual signature
+  metadata is used when present; otherwise original types are translated
+  through the file's class records.
+- `ambiguous`: `multiple-records`, `descriptor-mismatch`, `type-mismatch`,
+  `ambiguous-class` or `residual-signature-conflict`, with `candidate_count` and
+  up to 8 candidates. Conflicting residual metadata never selects a winner. A name match
+  whose prototype or type does not verify is never reported as mapped.
+- `unmapped`: no valid record matched the raw identity.
+- `unknown` with reason `projection-budget`: this claim did not fit the combined
+  reply budget. The observed raw symbol remains present; `coverage.unknown`
+  counts these omissions. Inspect that specific class or method separately,
+  or consult the selected local mapping file for complete source records.
+
+A line continues an inline frame stack when it repeats the previous line's
+minified range and obfuscated name and gives a single call-site line, such as
+`:7`. Only the outermost original of a stack becomes a candidate. Original
+line numbers and source files are not projected. Malformed records are counted
+and skipped, so an `unmapped` symbol might be described by one of them. A file
+that is missing, not a regular file, not UTF-8, larger than the byte limit or
+without any class record, such as `usage.txt` or `seeds.txt`, is refused before
+JADX is used. Requests read their mappings one at a time, in the same queue as
+the JADX work and under the same operation deadline. A mapping failure therefore never starts or retires the JADX
+session, and a different mapping reuses the loaded APK.
 
 ## Interpret the result
 
@@ -251,6 +386,11 @@ the same source byte limit and explicit truncation reporting.
   `dex_descriptor`, for example `(I)V`. Display names can be JADX aliases;
   the descriptor alone is not a complete raw DEX method ID. Overload indices
   are tied to this artifact and engine, not stable identities across builds.
+- A `mapping` block appears only when the caller selected `mapping_path`. Its
+  names are claims from that file, not observations of the APK. REA does not
+  check that the mapping belongs to this build; `pg_map_id` is reported, not
+  compared. Evidence keeps the selected path in its parameters and the file's
+  SHA-256 in the result.
 - Method inspection reports Java or smali, fallback markers and complete/partial
   returned text. Decompiled source is a derived representation. A complete text
   result does not establish complete semantics or a byte-identical reconstruction.
@@ -400,11 +540,17 @@ export REA_JADX_OPERATION_TIMEOUT_MS=600000
 
 The value must be a decimal millisecond count from 1 to 2147483647; anything
 else is refused before Java starts. REA reads it from the environment captured
-at process start. A change applies on the next process start; an already
-running server keeps the deadline it started with. The same deadline bounds
-each upstream call. A timeout names `REA_JADX_OPERATION_TIMEOUT_MS`, the
-effective milliseconds, and that range. A passing JADX configuration check in
-`rea doctor` reports the effective `operation_timeout_ms`. Explicit
+at process start. Changing that environment requires a new REA process. On a
+running MCP server, set `jadx.operation_timeout_ms` through
+`update_analysis_settings` to change the default for newly accepted operations;
+queued or running operations retain their accepted budget. The same deadline
+bounds each upstream call. Timeout recovery reports the effective milliseconds
+and range, with `details.limit` identifying the runtime setting. An invalid
+provider-local launch value can also be repaired by a runtime override; reset
+exposes that invalid launch value again. See the
+[settings design](design/limits-and-recovery.md#invalid-launch-configuration).
+A passing JADX configuration check in `rea doctor` reports its launch-derived
+`operation_timeout_ms`; it does not inspect another running server's overrides. Explicit
 cancellation still ends the operation immediately, and partial observations
 and owned-process cleanup are unchanged. Raising the deadline does not extend
 the bridge's 30-second startup handshake or the upstream **90-second**
@@ -418,6 +564,27 @@ truncation. Class-name pages use indexed slices of up to 4,096 names without cha
 complete, case-sensitive search contract. A protocol frame above **8 MiB**, or combined stdout/stderr above
 **32 MiB per operation**, fails with a diagnostic instead of returning an incomplete inventory
 as complete. These are memory-safety boundaries, not undocumented result caps.
+
+A selected R8/ProGuard mapping is re-read and SHA-256 checked on every call, up
+to **64 MiB**. The serialized provider keeps one successful parsed index, keyed
+by byte length and digest with fixed parser options. Identical bytes reuse that
+index; changed bytes are reparsed, missing files still fail, and each response
+preserves the currently selected path. The index is released on provider idle
+retirement or close. Omitting `mapping_path` never applies the cached mapping.
+During replacement, the old index can coexist with the new parse until it
+succeeds; these transient allocations count toward process memory.
+
+Before retaining records, the parser admits an estimated **128 MiB** index
+representation and **8 MiB** of expanded mapped claims per residual class,
+including shared header facts. The index allowance accounts for strings and
+containers; it is not a measured V8 heap cap. Parameter and metadata expansion
+is admitted before splitting or JSON decoding. These fixed resource bounds
+have no runtime override; refusal reports `resource_constraint`, the source
+line and mapping SHA-256. Ambiguous lookups count all candidates while keeping
+only the first eight in stable file order. A separate **8 MiB** combined claim
+budget applies to the actual query set, including outer and inner classes,
+before cloning the report. Claims that do not fit become explicit `unknown`
+entries; other admitted claims and all observed identities remain available.
 
 ## Real verification
 
