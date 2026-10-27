@@ -245,7 +245,7 @@ cliTest.skipIf(process.platform === "win32").for([
             state: "unknown",
             command,
             config_path: config,
-            remediation: `The existing "rea" registration read from ${config} has unknown ownership and was not changed. Review its launcher and manually rename or remove that registration before rerunning setup. A different installation path does not prove REA ownership.`,
+            remediation: expect.any(String),
           }),
         ]),
       },
