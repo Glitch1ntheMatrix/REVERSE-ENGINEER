@@ -1,7 +1,10 @@
 import { z } from "zod";
 import { digestSchema } from "../digests.js";
+import { jsonStringByteLength } from "../jsonStringByteLength.js";
 import { dexDescriptorSchema, dexTypeSchema } from "./dexTypes.js";
 import {
+  PROGUARD_MAPPING_LIMITS,
+  proguardResolutionBytes,
   type ProguardMapping,
   type ProguardResolution,
   resolveProguardClass,
@@ -10,13 +13,12 @@ import {
 } from "./proguardMapping.js";
 
 /**
- * Memory bounds for one caller-selected mapping, parsed once per call. These
- * are not runtime settings: the whole file is decoded and indexed in memory.
+ * Admission bounds for one caller-selected mapping. The index is reused only
+ * after re-reading the file and verifying its exact digest.
  */
 export const ANDROID_MAPPING_LIMITS = Object.freeze({
   fileBytes: 64 * 1024 * 1024,
-  malformedSamples: 16,
-  candidates: 8,
+  ...PROGUARD_MAPPING_LIMITS,
 });
 
 /** Caller-selected mapping provenance, added to Evidence when a mapping is applied. */
@@ -65,12 +67,17 @@ const resolution = <
         "descriptor-mismatch",
         "type-mismatch",
         "ambiguous-class",
+        "residual-signature-conflict",
       ]),
       candidate_count: z.int().positive(),
       /** The first ANDROID_MAPPING_LIMITS.candidates candidates. */
       candidates: z.array(mapped),
     }),
     z.strictObject({ status: z.literal("unmapped") }),
+    z.strictObject({
+      status: z.literal("unknown"),
+      reason: z.literal("projection-budget"),
+    }),
   ]);
 
 const classSymbol = {
@@ -149,6 +156,7 @@ export const androidMappingReportSchema = z.strictObject({
     mapped: count,
     ambiguous: count,
     unmapped: count,
+    unknown: count.exactOptional(),
   }),
 });
 
@@ -168,40 +176,22 @@ export interface AndroidMappingSource {
   readonly mapping: ProguardMapping;
 }
 
-const bounded = <Mapped, Verifier extends string>(
-  resolved: ProguardResolution<Mapped, Verifier>,
-) =>
-  resolved.status === "ambiguous"
-    ? {
-        ...resolved,
-        candidate_count: resolved.candidates.length,
-        candidates: resolved.candidates.slice(
-          0,
-          ANDROID_MAPPING_LIMITS.candidates,
-        ),
-      }
-    : resolved;
-
 const resolve = (mapping: ProguardMapping, query: AndroidMappingQuery) => {
   switch (query.kind) {
     case "class":
-      return bounded(resolveProguardClass(mapping, query.raw_name));
+      return resolveProguardClass(mapping, query.raw_name);
     case "field":
-      return bounded(
-        resolveProguardField(mapping, {
-          className: query.class_raw_name,
-          name: query.raw_name,
-          type: query.dex_type,
-        }),
-      );
+      return resolveProguardField(mapping, {
+        className: query.class_raw_name,
+        name: query.raw_name,
+        type: query.dex_type,
+      });
     case "method":
-      return bounded(
-        resolveProguardMethod(mapping, {
-          className: query.class_raw_name,
-          name: query.raw_name,
-          descriptor: query.dex_descriptor,
-        }),
-      );
+      return resolveProguardMethod(mapping, {
+        className: query.class_raw_name,
+        name: query.raw_name,
+        descriptor: query.dex_descriptor,
+      });
   }
 };
 
@@ -209,13 +199,35 @@ const resolve = (mapping: ProguardMapping, query: AndroidMappingQuery) => {
 export const projectAndroidMapping = (
   source: AndroidMappingSource,
   queries: readonly AndroidMappingQuery[],
+  projectionBytes: number = ANDROID_MAPPING_LIMITS.projectionBytes,
 ): z.infer<typeof androidMappingReportSchema> => {
-  const symbols = queries.map((query) => ({
-    ...query,
-    resolution: resolve(source.mapping, query),
-  }));
-  const counted = (status: string) =>
-    symbols.filter((symbol) => symbol.resolution.status === status).length;
+  const coverage = {
+    symbols: queries.length,
+    mapped: 0,
+    ambiguous: 0,
+    unmapped: 0,
+  };
+  let unknown = 0;
+  let bytes = 256 + jsonStringByteLength(source.file.path);
+  for (const value of Object.values(source.mapping.reported))
+    bytes += value === null ? 4 : jsonStringByteLength(value);
+  // Several classes (including all inner classes) can share one inspection.
+  // Admit their combined claims before Zod clones them, retaining every raw
+  // symbol and marking delivery omissions as unknown rather than unmapped.
+  const symbols = queries.map((query) => {
+    const resolution = resolve(source.mapping, query);
+    const size = proguardResolutionBytes(resolution);
+    if (resolution.status !== "unmapped" && bytes + size > projectionBytes) {
+      unknown++;
+      return {
+        ...query,
+        resolution: { status: "unknown", reason: "projection-budget" } as const,
+      };
+    }
+    bytes += size;
+    coverage[resolution.status] += 1;
+    return { ...query, resolution };
+  });
   return androidMappingReportSchema.parse({
     association: "caller-selected",
     file: source.file,
@@ -223,12 +235,7 @@ export const projectAndroidMapping = (
     records: source.mapping.records,
     malformed: source.mapping.malformed,
     symbols,
-    coverage: {
-      symbols: symbols.length,
-      mapped: counted("mapped"),
-      ambiguous: counted("ambiguous"),
-      unmapped: counted("unmapped"),
-    },
+    coverage: { ...coverage, ...(unknown === 0 ? {} : { unknown }) },
   });
 };
 

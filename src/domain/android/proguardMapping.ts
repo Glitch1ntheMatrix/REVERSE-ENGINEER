@@ -1,5 +1,25 @@
 import { err, ok, type Result } from "../result.js";
 import { dexDescriptorSchema, dexTypeSchema } from "./dexTypes.js";
+import { jsonStringByteLength } from "../jsonStringByteLength.js";
+
+/** Retained representation and per-residual-class claim budgets, not file-size limits. */
+export const PROGUARD_MAPPING_LIMITS = Object.freeze({
+  indexBytes: 128 * 1024 * 1024,
+  projectionBytes: 8 * 1024 * 1024,
+  malformedSamples: 16,
+  candidates: 8,
+});
+type MappingLimits = {
+  readonly [Key in keyof typeof PROGUARD_MAPPING_LIMITS]?: number;
+};
+export type ProguardMappingFailure =
+  | { readonly kind: "no-class-records" }
+  | {
+      readonly kind: "capacity";
+      readonly resource: "index" | "projection";
+      readonly limit_bytes: number;
+      readonly line: number;
+    };
 
 /** Why one mapping line could not be used; raw line text is never retained. */
 export type ProguardMalformedReason =
@@ -30,9 +50,11 @@ export interface MappedMethod {
 interface MemberRecord<Mapped> {
   readonly mapped: Mapped;
   residual: string | undefined;
+  residualConflict: boolean;
 }
 interface ClassRecord {
   readonly name: string;
+  readonly residualName: string;
   readonly fields: Map<string, MemberRecord<MappedField>[]>;
   /** Outermost frames only, deduplicated across line-range splits. */
   readonly methods: Map<string, MemberRecord<MappedMethod>[]>;
@@ -79,7 +101,9 @@ export type ProguardResolution<Mapped, Verifier extends string> =
         | "multiple-records"
         | "descriptor-mismatch"
         | "type-mismatch"
-        | "ambiguous-class";
+        | "ambiguous-class"
+        | "residual-signature-conflict";
+      readonly candidate_count: number;
       readonly candidates: readonly Mapped[];
     }
   | { readonly status: "unmapped" };
@@ -136,10 +160,18 @@ interface MethodGroup {
   readonly range: string | null;
   outermost: MappedMethod;
   residual: string | undefined;
+  residualConflict: boolean;
+  line: number;
 }
 
 interface ParseState {
   readonly sampleLimit: number;
+  readonly limits: Required<MappingLimits>;
+  indexBytes: number;
+  headerBytes: number;
+  readonly projectionBytes: Map<string, number>;
+  failure: ProguardMappingFailure | undefined;
+  line: number;
   readonly reported: {
     -readonly [Key in keyof ProguardMapping["reported"]]: string | null;
   };
@@ -159,13 +191,91 @@ interface ParseState {
   last: MemberRecord<MappedField> | MethodGroup | undefined;
 }
 
+// Conservative accounting reserves UTF-16 strings plus container/entry/record
+// overhead. These are representation allowances, not claimed V8 heap measurements.
+const stringBytes = (value: string): number => 32 + value.length * 2;
+const capacity = (
+  state: ParseState,
+  resource: "index" | "projection",
+  line = state.line,
+): false => {
+  state.failure ??= {
+    kind: "capacity",
+    resource,
+    line,
+    limit_bytes:
+      resource === "index"
+        ? state.limits.indexBytes
+        : state.limits.projectionBytes,
+  };
+  return false;
+};
+const chargeIndex = (
+  state: ParseState,
+  delta: number,
+  line = state.line,
+): boolean => {
+  if (state.indexBytes + delta > state.limits.indexBytes)
+    return capacity(state, "index", line);
+  state.indexBytes += delta;
+  return true;
+};
+const chargeProjection = (
+  state: ParseState,
+  record: ClassRecord,
+  delta: number,
+  line = state.line,
+): boolean => {
+  const bytes = (state.projectionBytes.get(record.residualName) ?? 0) + delta;
+  if (state.headerBytes + bytes > state.limits.projectionBytes)
+    return capacity(state, "projection", line);
+  state.projectionBytes.set(record.residualName, bytes);
+  return true;
+};
+const fieldProjectionBytes = (mapped: MappedField): number =>
+  128 +
+  jsonStringByteLength(mapped.class) +
+  jsonStringByteLength(mapped.name) +
+  jsonStringByteLength(mapped.type);
+const methodProjectionBytes = (mapped: MappedMethod): number => {
+  let bytes =
+    160 +
+    jsonStringByteLength(mapped.class) +
+    jsonStringByteLength(mapped.name) +
+    jsonStringByteLength(mapped.return_type);
+  for (const type of mapped.parameter_types)
+    bytes += jsonStringByteLength(type) + 1;
+  return bytes;
+};
+
+/** Expanded claims only; observations are retained separately by their owner. */
+export const proguardResolutionBytes = (
+  resolution: ProguardResolution<
+    MappedClass | MappedField | MappedMethod,
+    string
+  >,
+): number => {
+  const mappedBytes = (mapped: MappedClass | MappedField | MappedMethod) =>
+    "parameter_types" in mapped
+      ? methodProjectionBytes(mapped)
+      : "type" in mapped
+        ? fieldProjectionBytes(mapped)
+        : 128 + jsonStringByteLength(mapped.name);
+  if (resolution.status === "unmapped") return 64;
+  if (resolution.status === "mapped")
+    return 64 + mappedBytes(resolution.mapped);
+  let bytes = 128;
+  for (const mapped of resolution.candidates) bytes += mappedBytes(mapped);
+  return bytes;
+};
+
 const malformed = (
   state: ParseState,
   line: number,
   reason: ProguardMalformedReason,
 ): void => {
   state.records.malformed++;
-  if (state.malformed.length < state.sampleLimit)
+  if (state.malformed.length < state.sampleLimit && chargeIndex(state, 96))
     state.malformed.push({ line, reason });
 };
 
@@ -180,15 +290,34 @@ const append = <Value>(
 };
 
 // Validated names and types hold no whitespace, so spaces separate safely.
-const methodKey = (obfuscated: string, method: MappedMethod): string =>
-  `${obfuscated} ${method.class} ${method.name} ${method.return_type} ${method.parameter_types.join(",")}`;
+const methodKey = (
+  obfuscated: string,
+  method: MappedMethod,
+  section: string,
+): string =>
+  `${obfuscated} ${method.class === section ? "" : method.class} ${method.name} ${method.return_type} ${method.parameter_types.join(",")}`;
+
+const memberIndexBytes = (
+  mapped: MappedField | MappedMethod,
+  section: string,
+): number => {
+  let bytes =
+    256 +
+    stringBytes(mapped.name) +
+    (mapped.class === section ? 0 : stringBytes(mapped.class));
+  if ("type" in mapped) return bytes + stringBytes(mapped.type);
+  bytes +=
+    stringBytes(mapped.return_type) + 32 + mapped.parameter_types.length * 16;
+  for (const type of mapped.parameter_types) bytes += stringBytes(type);
+  return bytes;
+};
 
 /** Commit a frame stack's outermost original, merging line-range splits. */
 const closeGroup = (state: ParseState): void => {
   const group = state.group;
   state.group = undefined;
   if (group === undefined) return;
-  const key = methodKey(group.obfuscated, group.outermost);
+  const key = methodKey(group.obfuscated, group.outermost, group.record.name);
   const same = group.record.methodIndex
     .get(key)
     ?.find(
@@ -198,16 +327,41 @@ const closeGroup = (state: ParseState): void => {
         candidate.residual === group.residual,
     );
   if (same !== undefined) {
-    same.residual ??= group.residual;
+    if (same.residual === undefined && group.residual !== undefined) {
+      if (!chargeIndex(state, stringBytes(group.residual), group.line)) return;
+      same.residual = group.residual;
+    }
+    same.residualConflict ||= group.residualConflict;
     return;
   }
-  const record = { mapped: group.outermost, residual: group.residual };
+  const bytes =
+    memberIndexBytes(group.outermost, group.record.name) +
+    stringBytes(key) +
+    stringBytes(group.obfuscated) +
+    192 +
+    (group.residual === undefined ? 0 : stringBytes(group.residual));
+  if (
+    !chargeIndex(state, bytes, group.line) ||
+    !chargeProjection(
+      state,
+      group.record,
+      methodProjectionBytes(group.outermost),
+      group.line,
+    )
+  )
+    return;
+  const record = {
+    mapped: group.outermost,
+    residual: group.residual,
+    residualConflict: group.residualConflict,
+  };
   append(group.record.methods, group.obfuscated, record);
   append(group.record.methodIndex, key, record);
 };
 
 const parseClassLine = (state: ParseState, line: string, number: number) => {
   closeGroup(state);
+  if (state.failure !== undefined) return;
   state.last = undefined;
   const match = CLASS_LINE.exec(line);
   if (match === null) {
@@ -216,12 +370,22 @@ const parseClassLine = (state: ParseState, line: string, number: number) => {
     return;
   }
   const [, original = "", residual = ""] = match;
+  if (
+    !chargeIndex(
+      state,
+      896 + 2 * stringBytes(original) + 2 * stringBytes(residual),
+    )
+  )
+    return;
   const record: ClassRecord = {
     name: original,
+    residualName: residual,
     fields: new Map(),
     methods: new Map(),
     methodIndex: new Map(),
   };
+  if (!chargeProjection(state, record, 128 + jsonStringByteLength(original)))
+    return;
   state.current = record;
   state.records.classes++;
   append(state.classes, residual, record);
@@ -234,10 +398,22 @@ const parseField = (state: ParseState, record: ClassRecord, line: string) => {
   const [, type = "", name = "", obfuscated = ""] = match;
   if (!validType(type, false)) return false;
   closeGroup(state);
+  if (state.failure !== undefined) return true;
   const field: MemberRecord<MappedField> = {
     mapped: { ...memberOwner(name, record.name), type },
     residual: undefined,
+    residualConflict: false,
   };
+  if (
+    !chargeIndex(
+      state,
+      memberIndexBytes(field.mapped, record.name) +
+        stringBytes(obfuscated) +
+        96,
+    ) ||
+    !chargeProjection(state, record, fieldProjectionBytes(field.mapped))
+  )
+    return true;
   append(record.fields, obfuscated, field);
   state.records.fields++;
   state.last = field;
@@ -264,6 +440,25 @@ const parseMethod = (state: ParseState, record: ClassRecord, line: string) => {
     originalEnd,
     obfuscated = "",
   ] = match;
+  // Count before split: a small source string can otherwise allocate millions
+  // of parameter slots before the retained-representation admission runs.
+  let parameterCount = args === "" ? 0 : 1;
+  for (let index = 0; index < args.length; index++)
+    if (args.charCodeAt(index) === 44) parameterCount++;
+  if (args.length * 4 + parameterCount * 64 + 512 > state.limits.indexBytes)
+    return capacity(state, "index");
+  const owner = memberOwner(name, record.name);
+  if (
+    state.headerBytes +
+      160 +
+      jsonStringByteLength(owner.class) +
+      jsonStringByteLength(owner.name) +
+      jsonStringByteLength(returnType) +
+      jsonStringByteLength(args) +
+      2 * parameterCount >
+    state.limits.projectionBytes
+  )
+    return capacity(state, "projection");
   const parameters = args === "" ? [] : args.split(",");
   const range = methodRange(start, end);
   if (
@@ -273,7 +468,7 @@ const parseMethod = (state: ParseState, record: ClassRecord, line: string) => {
   )
     return false;
   const mapped: MappedMethod = {
-    ...memberOwner(name, record.name),
+    ...owner,
     return_type: returnType,
     parameter_types: parameters,
   };
@@ -290,15 +485,19 @@ const parseMethod = (state: ParseState, record: ClassRecord, line: string) => {
     originalEnd === undefined
   ) {
     group.outermost = mapped;
+    group.line = state.line;
     return true;
   }
   closeGroup(state);
+  if (state.failure !== undefined) return true;
   state.group = {
     record,
     obfuscated,
     range,
     outermost: mapped,
     residual: undefined,
+    residualConflict: false,
+    line: state.line,
   };
   state.last = state.group;
   return true;
@@ -314,6 +513,7 @@ const parseMember = (state: ParseState, line: string, number: number) => {
   }
   if (parseField(state, record, line) || parseMethod(state, record, line))
     return;
+  if (state.failure !== undefined) return;
   closeGroup(state);
   state.last = undefined;
   malformed(state, number, "member-line");
@@ -336,6 +536,31 @@ const metadataObject = (body: string): Record<string, unknown> | undefined => {
     : undefined;
 };
 
+const setReported = (
+  state: ParseState,
+  key: keyof ProguardMapping["reported"],
+  value: string | null,
+): void => {
+  const before = state.reported[key];
+  const delta =
+    (value === null ? 4 : jsonStringByteLength(value)) -
+    (before === null ? 4 : jsonStringByteLength(before));
+  if (state.headerBytes + delta > state.limits.projectionBytes) {
+    capacity(state, "projection");
+    return;
+  }
+  if (
+    !chargeIndex(
+      state,
+      (value === null ? 0 : stringBytes(value)) -
+        (before === null ? 0 : stringBytes(before)),
+    )
+  )
+    return;
+  state.headerBytes += delta;
+  state.reported[key] = value;
+};
+
 /** Attach R8 metadata the v1 resolver uses; other ids are ignored. */
 const parseMetadata = (
   state: ParseState,
@@ -345,7 +570,7 @@ const parseMetadata = (
   if (metadata.id === "com.android.tools.r8.mapping") {
     if (state.current !== undefined) return;
     if (typeof metadata.version === "string")
-      state.reported.map_version = metadata.version;
+      setReported(state, "map_version", metadata.version);
     else malformed(state, number, "metadata");
     return;
   }
@@ -354,12 +579,36 @@ const parseMetadata = (
   if (target === undefined) return;
   const schema = "outermost" in target ? dexDescriptorSchema : dexTypeSchema;
   const signature = schema.safeParse(metadata.signature);
-  if (signature.success) target.residual = signature.data;
-  else malformed(state, number, "metadata");
+  if (!signature.success) {
+    malformed(state, number, "metadata");
+    return;
+  }
+  if (target.residual !== undefined) {
+    if (target.residual !== signature.data) target.residualConflict = true;
+    return;
+  }
+  if ("outermost" in target) {
+    if (stringBytes(signature.data) > state.limits.indexBytes) {
+      capacity(state, "index");
+      return;
+    }
+  } else if (!chargeIndex(state, stringBytes(signature.data))) return;
+  target.residual = signature.data;
 };
 
 const parseComment = (state: ParseState, line: string, number: number) => {
   const body = line.trimStart().slice(1).trim();
+  if (body.startsWith("{")) {
+    if (Buffer.byteLength(body) > state.limits.projectionBytes) {
+      capacity(state, "projection");
+      return;
+    }
+    // JSON.parse can materialize arrays/objects before metadata selection.
+    if (state.indexBytes + body.length * 32 > state.limits.indexBytes) {
+      capacity(state, "index");
+      return;
+    }
+  }
   const metadata = metadataObject(body);
   if (metadata !== undefined) {
     parseMetadata(state, metadata, number);
@@ -368,8 +617,11 @@ const parseComment = (state: ParseState, line: string, number: number) => {
   const header = state.current === undefined ? HEADER.exec(line) : null;
   if (header === null) return;
   const [, key = "", value = ""] = header;
-  state.reported[key as keyof ParseState["reported"]] =
-    value === "" ? null : value;
+  setReported(
+    state,
+    key as keyof ParseState["reported"],
+    value === "" ? null : value,
+  );
 };
 
 const parseLine = (state: ParseState, raw: string, number: number) => {
@@ -386,10 +638,17 @@ const parseLine = (state: ParseState, raw: string, number: number) => {
  */
 export const parseProguardMapping = (
   text: string,
-  limits: { readonly malformedSamples: number },
-): Result<ProguardMapping, "no-class-records"> => {
+  limits: MappingLimits = {},
+): Result<ProguardMapping, ProguardMappingFailure> => {
   const state: ParseState = {
-    sampleLimit: limits.malformedSamples,
+    sampleLimit:
+      limits.malformedSamples ?? PROGUARD_MAPPING_LIMITS.malformedSamples,
+    limits: { ...PROGUARD_MAPPING_LIMITS, ...limits },
+    indexBytes: 512,
+    headerBytes: 256,
+    projectionBytes: new Map(),
+    failure: undefined,
+    line: 1,
     reported: {
       compiler: null,
       compiler_version: null,
@@ -406,9 +665,22 @@ export const parseProguardMapping = (
     group: undefined,
     last: undefined,
   };
-  text.split("\n").forEach((line, index) => parseLine(state, line, index + 1));
+  if (state.indexBytes > state.limits.indexBytes) capacity(state, "index");
+  if (state.headerBytes > state.limits.projectionBytes)
+    capacity(state, "projection");
+  let start = 0;
+  while (start <= text.length && state.failure === undefined) {
+    const newline = text.indexOf("\n", start);
+    const end = newline < 0 ? text.length : newline;
+    parseLine(state, text.slice(start, end), state.line);
+    if (newline < 0) break;
+    start = newline + 1;
+    state.line++;
+  }
+  if (state.failure !== undefined) return err(state.failure);
   closeGroup(state);
-  if (state.records.classes === 0) return err("no-class-records");
+  if (state.failure !== undefined) return err(state.failure);
+  if (state.records.classes === 0) return err({ kind: "no-class-records" });
   return ok({
     reported: state.reported,
     classes: state.classes,
@@ -427,9 +699,15 @@ export const residualDexType = (
   const dimensions = "[".repeat((type.length - element.length) / 2);
   const primitive = DEX_PRIMITIVES.get(element);
   if (primitive !== undefined) return dimensions + primitive;
-  const residual = new Set(mapping.residualNames.get(element) ?? [element]);
-  if (residual.size !== 1) return undefined;
-  return `${dimensions}L${[...residual][0]?.replaceAll(".", "/")};`;
+  const aliases = mapping.residualNames.get(element);
+  let residual = element;
+  if (aliases !== undefined) {
+    const first = aliases[0];
+    if (first === undefined) return undefined;
+    for (const alias of aliases) if (alias !== first) return undefined;
+    residual = first;
+  }
+  return `${dimensions}L${residual.replaceAll(".", "/")};`;
 };
 
 const residualDescriptor = (
@@ -437,19 +715,22 @@ const residualDescriptor = (
   record: MemberRecord<MappedMethod>,
 ): string | undefined => {
   if (record.residual !== undefined) return record.residual;
-  const parameters = record.mapped.parameter_types.map((type) =>
-    residualDexType(mapping, type),
-  );
+  let parameters = "";
+  for (const type of record.mapped.parameter_types) {
+    const residual = residualDexType(mapping, type);
+    if (residual === undefined) return undefined;
+    parameters += residual;
+  }
   const returned = residualDexType(mapping, record.mapped.return_type);
-  if (returned === undefined || parameters.includes(undefined))
-    return undefined;
-  return `(${parameters.join("")})${returned}`;
+  if (returned === undefined) return undefined;
+  return `(${parameters})${returned}`;
 };
 
 /** Resolve an observed raw class name; several records are ambiguous. */
 export const resolveProguardClass = (
   mapping: ProguardMapping,
   rawName: string,
+  limits: Pick<MappingLimits, "candidates"> = {},
 ): ProguardResolution<MappedClass, "class"> => {
   const records = mapping.classes.get(rawName) ?? [];
   const [only] = records;
@@ -463,7 +744,10 @@ export const resolveProguardClass = (
   return {
     status: "ambiguous",
     reason: "multiple-records",
-    candidates: records.map(({ name }) => ({ name })),
+    candidate_count: records.length,
+    candidates: records
+      .slice(0, limits.candidates ?? PROGUARD_MAPPING_LIMITS.candidates)
+      .map(({ name }) => ({ name })),
   };
 };
 
@@ -479,31 +763,59 @@ interface MemberQuery<Mapped> {
 const resolveMember = <Mapped, Verifier extends string>(
   query: MemberQuery<Mapped>,
   verifier: Verifier,
+  sampleLimit: number,
 ): ProguardResolution<Mapped, Verifier> => {
-  const candidates = query.records.flatMap(query.candidates);
-  if (candidates.length === 0) return { status: "unmapped" };
-  const mapped = (records: readonly MemberRecord<Mapped>[]) =>
-    records.map((record) => record.mapped);
+  const candidates: Mapped[] = [];
+  const verified: Mapped[] = [];
+  let count = 0;
+  let verifiedCount = 0;
+  let conflict = false;
+  let only: Mapped | undefined;
+  for (const owner of query.records) {
+    for (const record of query.candidates(owner)) {
+      count++;
+      if (candidates.length < sampleLimit) candidates.push(record.mapped);
+      conflict ||= record.residualConflict;
+      if (
+        query.records.length > 1 ||
+        record.residualConflict ||
+        !query.matches(record)
+      )
+        continue;
+      verifiedCount++;
+      only = record.mapped;
+      if (verified.length < sampleLimit) verified.push(record.mapped);
+    }
+  }
+  if (count === 0) return { status: "unmapped" };
   if (query.records.length > 1)
     return {
       status: "ambiguous",
       reason: "ambiguous-class",
-      candidates: mapped(candidates),
+      candidate_count: count,
+      candidates,
     };
-  const verified = candidates.filter(query.matches);
-  const [only] = verified;
-  if (only !== undefined && verified.length === 1)
-    return { status: "mapped", mapped: only.mapped, verified_by: verifier };
-  return verified.length > 1
+  if (conflict)
+    return {
+      status: "ambiguous",
+      reason: "residual-signature-conflict",
+      candidate_count: count,
+      candidates,
+    };
+  if (only !== undefined && verifiedCount === 1)
+    return { status: "mapped", mapped: only, verified_by: verifier };
+  return verifiedCount > 1
     ? {
         status: "ambiguous",
         reason: "multiple-records",
-        candidates: mapped(verified),
+        candidate_count: verifiedCount,
+        candidates: verified,
       }
     : {
         status: "ambiguous",
         reason: query.mismatch,
-        candidates: mapped(candidates),
+        candidate_count: count,
+        candidates,
       };
 };
 
@@ -515,6 +827,7 @@ export const resolveProguardMethod = (
     readonly name: string;
     readonly descriptor: string;
   },
+  limits: Pick<MappingLimits, "candidates"> = {},
 ): ProguardResolution<MappedMethod, "descriptor"> =>
   resolveMember(
     {
@@ -525,6 +838,7 @@ export const resolveProguardMethod = (
       mismatch: "descriptor-mismatch",
     },
     "descriptor",
+    limits.candidates ?? PROGUARD_MAPPING_LIMITS.candidates,
   );
 
 /** Resolve an observed raw field by its DEX type; names alone never map. */
@@ -535,6 +849,7 @@ export const resolveProguardField = (
     readonly name: string;
     readonly type: string;
   },
+  limits: Pick<MappingLimits, "candidates"> = {},
 ): ProguardResolution<MappedField, "type"> =>
   resolveMember(
     {
@@ -546,4 +861,5 @@ export const resolveProguardField = (
       mismatch: "type-mismatch",
     },
     "type",
+    limits.candidates ?? PROGUARD_MAPPING_LIMITS.candidates,
   );

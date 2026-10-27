@@ -971,7 +971,7 @@ const parsedMapping = parseProguardMapping(
   ].join("\n"),
   ANDROID_MAPPING_LIMITS,
 );
-if (!parsedMapping.ok) throw new Error(parsedMapping.error);
+if (!parsedMapping.ok) throw new Error(JSON.stringify(parsedMapping.error));
 const mapping: AndroidMappingSource = {
   file: { path: "/tmp/mapping.txt", sha256: "b".repeat(64), bytes: 256 },
   mapping: parsedMapping.value,

@@ -141,6 +141,7 @@ export const readAndroidMapping = async (
   operation: string,
   resources: ArtifactResourceScope,
   signal: AbortSignal,
+  cached?: AndroidMappingSource,
 ): Promise<Result<AndroidMappingSource, AnalysisError>> => {
   const read = { path, operation, signal };
   let snapshot: Awaited<ReturnType<typeof readStableArtifact>>;
@@ -157,6 +158,12 @@ export const readAndroidMapping = async (
   } catch (cause: unknown) {
     return err(readFailure(cause, read));
   }
+  const file = { path, sha256: snapshot.sha256, bytes: snapshot.bytes.length };
+  // Only parsed facts are reused. The selected regular file is re-read and
+  // identity-checked on every call; path/identity metadata always comes from it.
+  // Parser options are fixed for this provider lifetime, independent of APKs.
+  if (cached?.file.sha256 === file.sha256 && cached.file.bytes === file.bytes)
+    return ok({ file, mapping: cached.mapping });
   const malformed = (message: string) =>
     err(
       invalidMapping(read, "invalid_format", message, {
@@ -170,12 +177,23 @@ export const readAndroidMapping = async (
     return malformed(`Mapping file is not valid UTF-8: ${path}`);
   }
   const mapping = parseProguardMapping(text, ANDROID_MAPPING_LIMITS);
-  if (!mapping.ok)
-    return malformed(
-      `Mapping file has no R8/ProGuard class records (${mapping.error}): ${path}`,
-    );
-  return ok({
-    file: { path, sha256: snapshot.sha256, bytes: snapshot.bytes.length },
-    mapping: mapping.value,
-  });
+  if (!mapping.ok) {
+    if (mapping.error.kind === "capacity")
+      return err(
+        new AnalysisResourceConstraintError(
+          operation,
+          mapping.error.resource === "index" ? "memory" : "transport",
+          `The mapping exceeds its ${mapping.error.resource} admission budget.`,
+          { limit_bytes: mapping.error.limit_bytes, line: mapping.error.line },
+          {
+            retryable: false,
+            diagnostics: { mapping_path: path, mapping_sha256: file.sha256 },
+            remediationAction:
+              "Select a smaller mapping index or a mapping with a smaller per-class projection.",
+          },
+        ),
+      );
+    return malformed(`Mapping file has no R8/ProGuard class records: ${path}`);
+  }
+  return ok({ file, mapping: mapping.value });
 };

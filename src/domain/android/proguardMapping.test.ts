@@ -1,10 +1,11 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   ANDROID_MAPPING_LIMITS,
   projectAndroidMapping,
 } from "./androidMapping.js";
 import {
   parseProguardMapping,
+  PROGUARD_MAPPING_LIMITS,
   type ProguardMapping,
   residualDexType,
   resolveProguardClass,
@@ -52,7 +53,7 @@ const fixture = [
 
 const parse = (text: string): ProguardMapping => {
   const parsed = parseProguardMapping(text, ANDROID_MAPPING_LIMITS);
-  if (!parsed.ok) throw new Error(parsed.error);
+  if (!parsed.ok) throw new Error(JSON.stringify(parsed.error));
   return parsed.value;
 };
 const mapping = parse(fixture);
@@ -100,6 +101,7 @@ it("maps classes only through exactly one residual record", () => {
   expect(resolveProguardClass(mapping, "a.f")).toEqual({
     status: "ambiguous",
     reason: "multiple-records",
+    candidate_count: 2,
     candidates: [{ name: `${app}.First` }, { name: `${app}.Second` }],
   });
   expect(resolveProguardClass(mapping, "a.z")).toEqual({ status: "unmapped" });
@@ -195,6 +197,7 @@ it("never maps a lone name-only method candidate", () => {
   ).toEqual({
     status: "ambiguous",
     reason: "descriptor-mismatch",
+    candidate_count: 1,
     candidates: [method("retry")],
   });
   expect(
@@ -206,6 +209,7 @@ it("never maps a lone name-only method candidate", () => {
   ).toEqual({
     status: "ambiguous",
     reason: "descriptor-mismatch",
+    candidate_count: 1,
     candidates: [method("validate", ["java.lang.String"], "boolean")],
   });
   expect(
@@ -308,6 +312,8 @@ it("translates original types to residual DEX types", () => {
       "com.example.Outer$Inner -> a.b$c:",
       "com.example.Twice -> a.t:",
       "com.example.Twice -> a.u:",
+      "com.example.Duplicate -> a.d:",
+      "com.example.Duplicate -> a.d:",
     ].join("\n"),
   );
   expect(residualDexType(renamed, "int[][]")).toBe("[[I");
@@ -316,6 +322,7 @@ it("translates original types to residual DEX types", () => {
   );
   expect(residualDexType(renamed, "java.util.List")).toBe("Ljava/util/List;");
   expect(residualDexType(renamed, "com.example.Twice")).toBeUndefined();
+  expect(residualDexType(renamed, "com.example.Duplicate")).toBe("La/d;");
 });
 
 it("uses residual signature metadata and reports an invalid payload", () => {
@@ -348,6 +355,355 @@ it.each([
 ])("fails closed on a %s file without class records", (_name, text) => {
   expect(parseProguardMapping(text, ANDROID_MAPPING_LIMITS)).toEqual({
     ok: false,
-    error: "no-class-records",
+    error: { kind: "no-class-records" },
   });
+});
+
+it("refuses class-index growth at its source line with an explicit retained budget", () => {
+  const parsed = parseProguardMapping(
+    Array.from({ length: 8 }, (_, index) => `Owner${index} -> a${index}:`).join(
+      "\r\n",
+    ),
+    { indexBytes: 4096 },
+  );
+  expect(parsed).toEqual({
+    ok: false,
+    error: { kind: "capacity", resource: "index", limit_bytes: 4096, line: 4 },
+  });
+});
+
+it("admits a method's parameter representation before allocating its split array", () => {
+  const args = Array.from({ length: 200 }, () => "int").join(",");
+  const split = vi.spyOn(String.prototype, "split");
+  let parsed: ReturnType<typeof parseProguardMapping> | undefined;
+  let splits = 0;
+  try {
+    parsed = parseProguardMapping(`Owner -> a:\n    void many(${args}) -> b`, {
+      indexBytes: 4096,
+    });
+    splits = split.mock.calls.length;
+  } finally {
+    split.mockRestore();
+  }
+  expect(parsed).toMatchObject({
+    ok: false,
+    error: { kind: "capacity", resource: "index", line: 2 },
+  });
+  expect(splits).toBe(0);
+});
+
+it("refuses oversized JSON metadata before JSON.parse materializes its tree", () => {
+  const text = `Owner -> a:\n# {"id":"unknown","payload":"${"x".repeat(2048)}"}`;
+  const json = vi.spyOn(JSON, "parse");
+  let parsed: ReturnType<typeof parseProguardMapping> | undefined;
+  let calls = 0;
+  try {
+    parsed = parseProguardMapping(text, { projectionBytes: 1024 });
+    calls = json.mock.calls.length;
+  } finally {
+    json.mockRestore();
+  }
+  expect(parsed).toEqual({
+    ok: false,
+    error: {
+      kind: "capacity",
+      resource: "projection",
+      limit_bytes: 1024,
+      line: 2,
+    },
+  });
+  expect(calls).toBe(0);
+});
+
+it("charges retained headers by replacement delta rather than by repeated comments", () => {
+  const parsed = parseProguardMapping(
+    [
+      `# compiler: ${"x".repeat(100)}`,
+      ...Array.from({ length: 500 }, () => "# compiler: R8"),
+      "Owner -> a:",
+    ].join("\n"),
+    { indexBytes: 2048, projectionBytes: 512 },
+  );
+  expect(parsed).toMatchObject({
+    ok: true,
+    value: { reported: { compiler: "R8" } },
+  });
+});
+
+it("bounds repeated shared class names in expanded per-class mapping claims", () => {
+  const owner = `example.${"X".repeat(200)}`;
+  const parsed = parseProguardMapping(
+    `${owner} -> a:\n    int first -> b\n    int second -> c`,
+    {
+      projectionBytes: 1024,
+    },
+  );
+  expect(parsed).toEqual({
+    ok: false,
+    error: {
+      kind: "capacity",
+      resource: "projection",
+      limit_bytes: 1024,
+      line: 3,
+    },
+  });
+});
+
+it("does not cumulatively charge deduplicated line-range splits", () => {
+  const parsed = parseProguardMapping(
+    [
+      "Owner -> a:",
+      ...Array.from(
+        { length: 200 },
+        (_, index) => `    ${index + 1}:${index + 1}:void run():1:1 -> b`,
+      ),
+    ].join("\n"),
+    { indexBytes: 4096, projectionBytes: 1024 },
+  );
+  if (!parsed.ok) throw new Error(JSON.stringify(parsed.error));
+  expect(parsed.value.records.methods).toBe(200);
+  expect(
+    resolveProguardMethod(parsed.value, {
+      className: "a",
+      name: "b",
+      descriptor: "()V",
+    }),
+  ).toMatchObject({ status: "mapped", mapped: { name: "run" } });
+});
+
+it("charges only the retained outermost inline frame", () => {
+  const parsed = parseProguardMapping(
+    [
+      "Owner -> a:",
+      "    1:1:void foreign.Owner.inlined():1:1 -> b",
+      ...Array.from(
+        { length: 100 },
+        (_, index) => `    1:1:void outer${index}():7 -> b`,
+      ),
+    ].join("\n"),
+    { indexBytes: 4096, projectionBytes: 1024 },
+  );
+  if (!parsed.ok) throw new Error(JSON.stringify(parsed.error));
+  expect(
+    resolveProguardMethod(parsed.value, {
+      className: "a",
+      name: "b",
+      descriptor: "()V",
+    }),
+  ).toMatchObject({
+    status: "mapped",
+    mapped: { class: "Owner", name: "outer99" },
+  });
+});
+
+it("keeps class-local method keys small while distinguishing qualified foreign owners", () => {
+  const owner = `example.${"X".repeat(300)}`;
+  const parsed = parseProguardMapping(
+    `${owner} -> a:\n    void first() -> b\n    void second() -> c`,
+    {
+      indexBytes: 4500,
+    },
+  );
+  expect(parsed.ok).toBe(true);
+  const qualified = parse(
+    "Owner -> a:\n    void run() -> b\n    void foreign.Owner.run() -> b",
+  );
+  expect(
+    resolveProguardMethod(qualified, {
+      className: "a",
+      name: "b",
+      descriptor: "()V",
+    }),
+  ).toMatchObject({
+    status: "ambiguous",
+    candidate_count: 2,
+    candidates: [{ class: "Owner" }, { class: "foreign.Owner" }],
+  });
+});
+
+it("streams total candidate counts with bounded stable samples for classes and members", () => {
+  const text = Array.from(
+    { length: 12 },
+    (_, index) =>
+      `Owner${index} -> a:\n    int field${index} -> b\n    void method${index}() -> c`,
+  ).join("\n");
+  const many = parse(text);
+  const resolutions = [
+    resolveProguardClass(many, "a", { candidates: 2 }),
+    resolveProguardField(
+      many,
+      { className: "a", name: "b", type: "I" },
+      { candidates: 2 },
+    ),
+    resolveProguardMethod(
+      many,
+      { className: "a", name: "c", descriptor: "()V" },
+      { candidates: 2 },
+    ),
+  ];
+  for (const resolution of resolutions) {
+    expect(resolution).toMatchObject({
+      status: "ambiguous",
+      candidate_count: 12,
+    });
+    if (resolution.status !== "ambiguous")
+      throw new Error("Expected ambiguity");
+    expect(resolution.candidates).toHaveLength(2);
+  }
+  expect(resolveProguardClass(many, "a")).toMatchObject({
+    candidate_count: 12,
+    candidates: Array.from(
+      { length: PROGUARD_MAPPING_LIMITS.candidates },
+      (_, index) => ({ name: `Owner${index}` }),
+    ),
+  });
+});
+
+it("caps verified and mismatched member samples while counting every relevant candidate", () => {
+  const many = parse(
+    [
+      "Owner -> a:",
+      ...Array.from(
+        { length: 12 },
+        (_, index) => `    void method${index}(int) -> b`,
+      ),
+    ].join("\n"),
+  );
+  for (const descriptor of ["(I)V", "(J)V"]) {
+    expect(
+      resolveProguardMethod(
+        many,
+        { className: "a", name: "b", descriptor },
+        { candidates: 2 },
+      ),
+    ).toMatchObject({
+      status: "ambiguous",
+      candidate_count: 12,
+      candidates: [{ name: "method0" }, { name: "method1" }],
+    });
+  }
+});
+
+it("samples verified candidates after earlier prototype mismatches", () => {
+  const many = parse(
+    [
+      "Owner -> a:",
+      ...Array.from(
+        { length: 10 },
+        (_, index) => `    void miss${index}(long) -> b`,
+      ),
+      "    void first(int) -> b",
+      "    void second(int) -> b",
+    ].join("\n"),
+  );
+  expect(
+    resolveProguardMethod(
+      many,
+      {
+        className: "a",
+        name: "b",
+        descriptor: "(I)V",
+      },
+      { candidates: 1 },
+    ),
+  ).toMatchObject({
+    status: "ambiguous",
+    reason: "multiple-records",
+    candidate_count: 2,
+    candidates: [{ name: "first" }],
+  });
+});
+
+it("bounds malformed samples while continuing to count all bad source records", () => {
+  const parsed = parseProguardMapping(
+    [
+      "Owner -> a:",
+      ...Array.from({ length: 100 }, () => "    not a member"),
+    ].join("\r\n"),
+    { indexBytes: 2048, malformedSamples: 2 },
+  );
+  expect(parsed).toMatchObject({
+    ok: true,
+    value: {
+      records: { malformed: 100 },
+      malformed: [
+        { line: 2, reason: "member-line" },
+        { line: 3, reason: "member-line" },
+      ],
+    },
+  });
+});
+
+it("charges repeated mapping-version metadata only for its retained replacement", () => {
+  const parsed = parseProguardMapping(
+    [
+      ...Array.from(
+        { length: 100 },
+        () => '# {"id":"com.android.tools.r8.mapping","version":"2.2"}',
+      ),
+      "Owner -> a:",
+    ].join("\n"),
+    { indexBytes: 4096, projectionBytes: 512 },
+  );
+  expect(parsed).toMatchObject({
+    ok: true,
+    value: { reported: { map_version: "2.2" } },
+  });
+});
+
+it("keeps conflicting repeated residual signatures ambiguous instead of last-wins mapping", () => {
+  const conflict = parse(
+    [
+      "Owner -> a:",
+      "    int value -> b",
+      '    # {"id":"com.android.tools.r8.residualsignature","signature":"I"}',
+      '    # {"id":"com.android.tools.r8.residualsignature","signature":"J"}',
+      "    void run() -> c",
+      '    # {"id":"com.android.tools.r8.residualsignature","signature":"()V"}',
+      '    # {"id":"com.android.tools.r8.residualsignature","signature":"(I)V"}',
+    ].join("\n"),
+  );
+  for (const type of ["I", "J"])
+    expect(
+      resolveProguardField(conflict, { className: "a", name: "b", type }),
+    ).toMatchObject({
+      status: "ambiguous",
+      reason: "residual-signature-conflict",
+      candidate_count: 1,
+    });
+  for (const descriptor of ["()V", "(I)V"])
+    expect(
+      resolveProguardMethod(conflict, {
+        className: "a",
+        name: "c",
+        descriptor,
+      }),
+    ).toMatchObject({
+      status: "ambiguous",
+      reason: "residual-signature-conflict",
+      candidate_count: 1,
+    });
+});
+
+it("does not charge repeated identical residual metadata as new retained strings", () => {
+  const parsed = parseProguardMapping(
+    [
+      "Owner -> a:",
+      "    int value -> b",
+      ...Array.from(
+        { length: 500 },
+        () =>
+          '    # {"id":"com.android.tools.r8.residualsignature","signature":"J"}',
+      ),
+    ].join("\n"),
+    { indexBytes: 4096, projectionBytes: 1024 },
+  );
+  if (!parsed.ok) throw new Error(JSON.stringify(parsed.error));
+  expect(
+    resolveProguardField(parsed.value, {
+      className: "a",
+      name: "b",
+      type: "J",
+    }),
+  ).toMatchObject({ status: "mapped" });
 });

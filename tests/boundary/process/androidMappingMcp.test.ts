@@ -125,6 +125,30 @@ it("annotates class inspection with a caller-selected mapping and reuses one eng
     });
   }
   expect(launches).toHaveLength(1);
+  // Content changes invalidate the mapping without restarting the APK engine.
+  await writeFile(second, mappingText("com.example.Updated"));
+  const refreshed = await inspect(second);
+  expect(refreshed.isError).not.toBe(true);
+  const updated = androidResultSchemas.inspect_android_class.parse(
+    parseEvidence(contract.outputSchema.parse(refreshed.structuredContent))
+      .normalized_result,
+  );
+  expect(updated.mapping?.symbols[0]?.resolution).toMatchObject({
+    status: "mapped",
+    mapped: { name: "com.example.Updated" },
+  });
+  const unannotated = await client.callTool({
+    name: "inspect_android_class",
+    arguments: { path: apk, class_name: "fixture.Target" },
+  });
+  expect(unannotated.isError).not.toBe(true);
+  expect(
+    androidResultSchemas.inspect_android_class.parse(
+      parseEvidence(contract.outputSchema.parse(unannotated.structuredContent))
+        .normalized_result,
+    ).mapping,
+  ).toBeUndefined();
+  expect(launches).toHaveLength(1);
 });
 
 it.each([

@@ -313,10 +313,15 @@ renamed reserved word. Each symbol resolves as:
   (`"descriptor"`) and a field its DEX type (`"type"`). R8 residual signature
   metadata is used when present; otherwise original types are translated
   through the file's class records.
-- `ambiguous`: `multiple-records`, `descriptor-mismatch`, `type-mismatch` or
-  `ambiguous-class`, with `candidate_count` and up to 8 candidates. A name match
+- `ambiguous`: `multiple-records`, `descriptor-mismatch`, `type-mismatch`,
+  `ambiguous-class` or `residual-signature-conflict`, with `candidate_count` and
+  up to 8 candidates. Conflicting residual metadata never selects a winner. A name match
   whose prototype or type does not verify is never reported as mapped.
 - `unmapped`: no valid record matched the raw identity.
+- `unknown` with reason `projection-budget`: this claim did not fit the combined
+  reply budget. The observed raw symbol remains present; `coverage.unknown`
+  counts these omissions. Inspect that specific class or method separately,
+  or consult the selected local mapping file for complete source records.
 
 A line continues an inline frame stack when it repeats the previous line's
 minified range and obfuscated name and gives a single call-site line, such as
@@ -544,10 +549,24 @@ complete, case-sensitive search contract. A protocol frame above **8 MiB**, or c
 **32 MiB per operation**, fails with a diagnostic instead of returning an incomplete inventory
 as complete. These are memory-safety boundaries, not undocumented result caps.
 
-A selected R8/ProGuard mapping is read once per call, up to **64 MiB**, and
-parsed in memory without caching. Calls are serialized, so one parsed mapping
-is held at a time. This is a fixed memory bound with no runtime
-override; a larger file fails with `resource_constraint`.
+A selected R8/ProGuard mapping is re-read and SHA-256 checked on every call, up
+to **64 MiB**. The serialized provider keeps one successful parsed index, keyed
+by byte length and digest with fixed parser options. Identical bytes reuse that
+index; changed bytes are reparsed, missing files still fail, and each response
+preserves the currently selected path. The index is released on provider idle
+retirement or close. Omitting `mapping_path` never applies the cached mapping.
+
+Before retaining records, the parser admits an estimated **128 MiB** index
+representation and **8 MiB** of expanded mapped claims per residual class,
+including shared header facts. The index allowance accounts for strings and
+containers; it is not a measured V8 heap cap. Parameter and metadata expansion
+is admitted before splitting or JSON decoding. These fixed resource bounds
+have no runtime override; refusal reports `resource_constraint`, the source
+line and mapping SHA-256. Ambiguous lookups count all candidates while keeping
+only the first eight in stable file order. A separate **8 MiB** combined claim
+budget applies to the actual query set, including outer and inner classes,
+before cloning the report. Claims that do not fit become explicit `unknown`
+entries; other admitted claims and all observed identities remain available.
 
 ## Real verification
 

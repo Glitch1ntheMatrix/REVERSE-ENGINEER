@@ -276,6 +276,7 @@ export class JadxProvider implements AndroidAnalysisPort {
   #tail: Promise<void> = Promise.resolve();
   #pendingCleanup: PendingCleanup | undefined;
   #retained: RetainedSession | undefined;
+  #mappingCache: AndroidMappingSource | undefined;
   #idle: NodeJS.Timeout | undefined;
   readonly #shutdown = new AbortController();
   readonly #prerequisites = new ArtifactResourceScope();
@@ -363,7 +364,12 @@ export class JadxProvider implements AndroidAnalysisPort {
       }
       const outcome = await this.#execute(target, request, { signal });
       // A refusal before session work, such as a bad mapping, keeps the session.
-      if (outcome.ok || this.#retained !== undefined) this.#scheduleIdle();
+      if (
+        outcome.ok ||
+        this.#retained !== undefined ||
+        this.#mappingCache !== undefined
+      )
+        this.#scheduleIdle();
       return outcome;
     } finally {
       release();
@@ -376,6 +382,7 @@ export class JadxProvider implements AndroidAnalysisPort {
     clearTimeout(this.#idle);
     this.#closePromise ??= this.#tail
       .then(async () => {
+        this.#mappingCache = undefined;
         await Promise.allSettled(this.#inspections);
         const retired = await this.#retire();
         try {
@@ -450,11 +457,14 @@ export class JadxProvider implements AndroidAnalysisPort {
       request.operation,
       this.#prerequisites,
       signal,
+      this.#mappingCache,
     );
+    if (read.ok) this.#mappingCache = read.value;
     if (
       read.ok ||
       !(read.error instanceof AnalysisCancelledError) ||
-      !deadline.timeout.aborted
+      !deadline.timeout.aborted ||
+      read.error.cause !== deadline.timeout.reason
     )
       return read;
     return err(
@@ -468,6 +478,7 @@ export class JadxProvider implements AndroidAnalysisPort {
   #scheduleIdle(): void {
     this.#idle = setTimeout(() => {
       this.#tail = this.#tail.then(async () => {
+        this.#mappingCache = undefined;
         await this.#retire();
       });
     }, 60_000);
