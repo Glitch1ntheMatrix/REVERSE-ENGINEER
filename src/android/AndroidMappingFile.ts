@@ -19,17 +19,38 @@ import {
   AnalysisCancelledError,
   AnalysisInputError,
   AnalysisResourceConstraintError,
+  AnalysisTimeoutError,
 } from "../domain/analysisErrorCore.js";
 import { ProviderAdapterError } from "../domain/providerAdapterError.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import { err, ok, type Result } from "../domain/result.js";
 import { isSelectedRegularFileError } from "../filesystem/RegularFile.js";
+import { jadxOperationTimeoutGuidance } from "./JadxOperationTimeout.js";
+
+export interface AndroidMappingReadDeadline {
+  readonly timeout: AbortSignal;
+  readonly timeoutMs: number;
+}
 
 interface MappingRead {
   readonly path: string;
   readonly operation: string;
   readonly signal: AbortSignal;
+  readonly deadline: AndroidMappingReadDeadline | undefined;
 }
+
+/** Select the first recorded interruption before cleanup changes its outer tag. */
+const mappingInterruption = (
+  read: MappingRead,
+  cause: unknown,
+): AnalysisError =>
+  read.deadline?.timeout.aborted === true &&
+  cause === read.deadline.timeout.reason
+    ? new AnalysisTimeoutError(read.operation, read.deadline.timeoutMs, {
+        cause,
+        ...jadxOperationTimeoutGuidance(read.deadline.timeoutMs),
+      })
+    : new AnalysisCancelledError(read.operation, { cause });
 
 const invalidMapping = (
   read: MappingRead,
@@ -54,9 +75,7 @@ const readFailurePrimary = (
       ? primary
       : undefined;
   if (owned?.reason === "cancelled")
-    return new AnalysisCancelledError(read.operation, {
-      cause: artifactFileCancellationCause(owned),
-    });
+    return mappingInterruption(read, artifactFileCancellationCause(owned));
   if (owned?.reason === "limit")
     return new AnalysisResourceConstraintError(
       read.operation,
@@ -98,10 +117,7 @@ const readFailurePrimary = (
       );
   }
   // A closed resource scope during shutdown is cancellation, not a file fault.
-  if (read.signal.aborted)
-    return new AnalysisCancelledError(read.operation, {
-      cause: read.signal.reason,
-    });
+  if (read.signal.aborted) return mappingInterruption(read, read.signal.reason);
   return new ProviderAdapterError("jadx", read.operation, {
     cause: primary,
     diagnostics: {
@@ -142,8 +158,9 @@ export const readAndroidMapping = async (
   resources: ArtifactResourceScope,
   signal: AbortSignal,
   cached?: AndroidMappingSource,
+  deadline?: AndroidMappingReadDeadline,
 ): Promise<Result<AndroidMappingSource, AnalysisError>> => {
-  const read = { path, operation, signal };
+  const read = { path, operation, signal, deadline };
   let snapshot: Awaited<ReturnType<typeof readStableArtifact>>;
   try {
     snapshot = await resources.run(() =>

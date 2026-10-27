@@ -325,6 +325,166 @@ it("translates original types to residual DEX types", () => {
   expect(residualDexType(renamed, "com.example.Duplicate")).toBe("La/d;");
 });
 
+it.each([
+  ["boolean", "Z"],
+  ["byte", "B"],
+  ["char", "C"],
+  ["short", "S"],
+  ["int[][]", "[[I"],
+  ["long", "J"],
+  ["float", "F"],
+  ["double", "D"],
+  ["java.lang.String", "Ljava/lang/String;"],
+  ["Original$Inner[][]", "[[Lr/名$𐐀;"],
+])("compares field and method type %s directly as %s", (type, descriptor) => {
+  const translated = parse(
+    [
+      "Original$Inner -> r.名$𐐀:",
+      "Owner -> a:",
+      `    ${type} value -> f`,
+      `    ${type} echo(${type}) -> m`,
+    ].join("\n"),
+  );
+  expect(
+    resolveProguardField(translated, {
+      className: "a",
+      name: "f",
+      type: descriptor,
+    }),
+  ).toMatchObject({ status: "mapped", mapped: { type } });
+  expect(
+    resolveProguardMethod(translated, {
+      className: "a",
+      name: "m",
+      descriptor: `(${descriptor})${descriptor}`,
+    }),
+  ).toMatchObject({
+    status: "mapped",
+    mapped: { parameter_types: [type], return_type: type },
+  });
+  expect(
+    resolveProguardMethod(translated, {
+      className: "a",
+      name: "m",
+      descriptor: `(${descriptor})V`,
+    }),
+  ).toMatchObject({ status: "ambiguous", reason: "descriptor-mismatch" });
+});
+
+it("preserves alias uncertainty and identical aliases during direct member comparisons", () => {
+  const aliases = parse(
+    [
+      "Twice -> x:",
+      "Twice -> y:",
+      "Duplicate -> d.e:",
+      "Duplicate -> d.e:",
+      "Owner -> a:",
+      "    Twice unclear -> f",
+      "    void unclear(Twice[]) -> m",
+      "    Duplicate known -> g",
+      "    Duplicate[] known(Duplicate) -> n",
+    ].join("\n"),
+  );
+  expect(
+    resolveProguardField(aliases, { className: "a", name: "f", type: "Lx;" }),
+  ).toMatchObject({ status: "ambiguous", reason: "type-mismatch" });
+  expect(
+    resolveProguardMethod(aliases, {
+      className: "a",
+      name: "m",
+      descriptor: "([Lx;)V",
+    }),
+  ).toMatchObject({ status: "ambiguous", reason: "descriptor-mismatch" });
+  expect(
+    resolveProguardField(aliases, { className: "a", name: "g", type: "Ld/e;" }),
+  ).toMatchObject({ status: "mapped" });
+  expect(
+    resolveProguardMethod(aliases, {
+      className: "a",
+      name: "n",
+      descriptor: "(Ld/e;)[Ld/e;",
+    }),
+  ).toMatchObject({ status: "mapped" });
+});
+
+it("compares explicit residual metadata exactly without falling back to original types", () => {
+  const metadata = parse(
+    [
+      "Original -> a:",
+      "    Original value -> f",
+      '    # {"id":"com.android.tools.r8.residualsignature","signature":"J"}',
+      "    Original echo(Original) -> m",
+      '    # {"id":"com.android.tools.r8.residualsignature","signature":"(I)J"}',
+    ].join("\n"),
+  );
+  for (const [type, status] of [
+    ["J", "mapped"],
+    ["La;", "ambiguous"],
+  ] as const)
+    expect(
+      resolveProguardField(metadata, { className: "a", name: "f", type }),
+    ).toMatchObject({ status });
+  for (const [descriptor, status] of [
+    ["(I)J", "mapped"],
+    ["(La;)La;", "ambiguous"],
+  ] as const)
+    expect(
+      resolveProguardMethod(metadata, {
+        className: "a",
+        name: "m",
+        descriptor,
+      }),
+    ).toMatchObject({ status });
+});
+
+it("does not expand a 5 MiB alias into a 640 MiB prototype before finding a later match", () => {
+  const expanded = parse(
+    [
+      `T -> ${"R".repeat(5 * 1024 * 1024)}:`,
+      "Owner -> a:",
+      "    T value -> f",
+      `    void enormous(${Array.from({ length: 128 }, () => "T").join(",")}) -> m`,
+      "    void later(int) -> m",
+      "    T returned() -> r",
+    ].join("\n"),
+  );
+  expect(expanded.records).toEqual({
+    classes: 2,
+    fields: 1,
+    methods: 3,
+    malformed: 0,
+  });
+  expect(
+    resolveProguardMethod(
+      expanded,
+      { className: "a", name: "m", descriptor: "(I)V" },
+      { candidates: 1 },
+    ),
+  ).toMatchObject({ status: "mapped", mapped: { name: "later" } });
+  expect(
+    resolveProguardMethod(
+      expanded,
+      { className: "a", name: "m", descriptor: "()V" },
+      { candidates: 1 },
+    ),
+  ).toMatchObject({
+    status: "ambiguous",
+    reason: "descriptor-mismatch",
+    candidate_count: 2,
+    candidates: [{ name: "enormous" }],
+  });
+  expect(
+    resolveProguardField(expanded, { className: "a", name: "f", type: "I" }),
+  ).toMatchObject({ status: "ambiguous", reason: "type-mismatch" });
+  expect(
+    resolveProguardMethod(expanded, {
+      className: "a",
+      name: "r",
+      descriptor: "()I",
+    }),
+  ).toMatchObject({ status: "ambiguous", reason: "descriptor-mismatch" });
+});
+
 it("uses residual signature metadata and reports an invalid payload", () => {
   const metadata = parse(
     [
@@ -428,6 +588,105 @@ it("charges retained headers by replacement delta rather than by repeated commen
     ok: true,
     value: { reported: { compiler: "R8" } },
   });
+});
+
+it("preserves Unicode class, member, qualified owner and parameter values when admitting strings", () => {
+  const retained = parse(
+    [
+      "原名.类型 -> r.类型𐐀:",
+      "原名.所有者$内部 -> r.所有者$内部:",
+      "    原名.类型[] 字段𐐀 -> 字",
+      "    原名.类型 外部.所有者.字段 -> 外",
+      "    原名.类型[][] 外部.所有者.方法𐐀(原名.类型[],long) -> 法",
+    ].join("\n"),
+  );
+  expect(resolveProguardClass(retained, "r.所有者$内部")).toMatchObject({
+    status: "mapped",
+    mapped: { name: "原名.所有者$内部" },
+  });
+  expect(
+    resolveProguardField(retained, {
+      className: "r.所有者$内部",
+      name: "字",
+      type: "[Lr/类型𐐀;",
+    }),
+  ).toMatchObject({
+    status: "mapped",
+    mapped: {
+      class: "原名.所有者$内部",
+      name: "字段𐐀",
+      type: "原名.类型[]",
+    },
+  });
+  expect(
+    resolveProguardField(retained, {
+      className: "r.所有者$内部",
+      name: "外",
+      type: "Lr/类型𐐀;",
+    }),
+  ).toMatchObject({
+    status: "mapped",
+    mapped: { class: "外部.所有者", name: "字段", type: "原名.类型" },
+  });
+  expect(
+    resolveProguardMethod(retained, {
+      className: "r.所有者$内部",
+      name: "法",
+      descriptor: "([Lr/类型𐐀;J)[[Lr/类型𐐀;",
+    }),
+  ).toMatchObject({
+    status: "mapped",
+    mapped: {
+      class: "外部.所有者",
+      name: "方法𐐀",
+      return_type: "原名.类型[][]",
+      parameter_types: ["原名.类型[]", "long"],
+    },
+  });
+});
+
+it("preserves header code units and JSON-escaped lone surrogates in admitted metadata", () => {
+  const mapVersion = "2.2-\ud800-𐐀-\udc00";
+  const fieldSignature = "[L原名/\udc00;";
+  const methodSignature = "(L原名/\ud800;)L返回/\udc00;";
+  const compilerVersion = "8.13-漢字-𐐀-literal\\ud800";
+  const metadata = (id: string, values: Record<string, string>) =>
+    `# ${JSON.stringify({ id: `com.android.tools.r8.${id}`, ...values })}`;
+  const retained = parse(
+    [
+      `# compiler_version: ${compilerVersion}`,
+      metadata("mapping", { version: mapVersion }),
+      "Original -> a:",
+      "    int field -> f",
+      metadata("residualsignature", { signature: fieldSignature }),
+      "    void method(int) -> m",
+      metadata("residualsignature", { signature: methodSignature }),
+    ].join("\n"),
+  );
+  expect(retained.reported.compiler_version).toBe(compilerVersion);
+  expect(retained.reported.map_version).toBe(mapVersion);
+  expect(retained.malformed).toEqual([]);
+  expect(
+    resolveProguardField(retained, {
+      className: "a",
+      name: "f",
+      type: fieldSignature,
+    }),
+  ).toMatchObject({ status: "mapped", mapped: { name: "field" } });
+  expect(
+    resolveProguardMethod(retained, {
+      className: "a",
+      name: "m",
+      descriptor: methodSignature,
+    }),
+  ).toMatchObject({ status: "mapped", mapped: { name: "method" } });
+  expect(
+    resolveProguardMethod(retained, {
+      className: "a",
+      name: "m",
+      descriptor: methodSignature.replaceAll(/\p{Surrogate}/gu, "�"),
+    }),
+  ).toMatchObject({ status: "ambiguous", reason: "descriptor-mismatch" });
 });
 
 it("bounds repeated shared class names in expanded per-class mapping claims", () => {

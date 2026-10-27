@@ -194,6 +194,18 @@ interface ParseState {
 // Conservative accounting reserves UTF-16 strings plus container/entry/record
 // overhead. These are representation allowances, not claimed V8 heap measurements.
 const stringBytes = (value: string): number => 32 + value.length * 2;
+/** Own admitted UTF-16 code units; slices/regex captures can retain the whole file. */
+const ownString = (value: string): string =>
+  Buffer.from(value, "utf16le").toString("utf16le");
+
+/** Share the already owned section name; qualified foreign owners need storage. */
+const ownMemberOwner = (
+  mapped: { readonly class: string; readonly name: string },
+  section: string,
+): { readonly class: string; readonly name: string } => ({
+  class: mapped.class === section ? section : ownString(mapped.class),
+  name: ownString(mapped.name),
+});
 const capacity = (
   state: ParseState,
   resource: "index" | "projection",
@@ -329,7 +341,7 @@ const closeGroup = (state: ParseState): void => {
   if (same !== undefined) {
     if (same.residual === undefined && group.residual !== undefined) {
       if (!chargeIndex(state, stringBytes(group.residual), group.line)) return;
-      same.residual = group.residual;
+      same.residual = ownString(group.residual);
     }
     same.residualConflict ||= group.residualConflict;
     return;
@@ -351,12 +363,19 @@ const closeGroup = (state: ParseState): void => {
   )
     return;
   const record = {
-    mapped: group.outermost,
-    residual: group.residual,
+    // Only the admitted outermost frame owns strings. Inline replacements and
+    // duplicate line ranges never copy their discarded names or parameters.
+    mapped: {
+      ...ownMemberOwner(group.outermost, group.record.name),
+      return_type: ownString(group.outermost.return_type),
+      parameter_types: group.outermost.parameter_types.map(ownString),
+    },
+    residual:
+      group.residual === undefined ? undefined : ownString(group.residual),
     residualConflict: group.residualConflict,
   };
-  append(group.record.methods, group.obfuscated, record);
-  append(group.record.methodIndex, key, record);
+  append(group.record.methods, ownString(group.obfuscated), record);
+  append(group.record.methodIndex, ownString(key), record);
 };
 
 const parseClassLine = (state: ParseState, line: string, number: number) => {
@@ -378,8 +397,8 @@ const parseClassLine = (state: ParseState, line: string, number: number) => {
   )
     return;
   const record: ClassRecord = {
-    name: original,
-    residualName: residual,
+    name: ownString(original),
+    residualName: ownString(residual),
     fields: new Map(),
     methods: new Map(),
     methodIndex: new Map(),
@@ -388,8 +407,8 @@ const parseClassLine = (state: ParseState, line: string, number: number) => {
     return;
   state.current = record;
   state.records.classes++;
-  append(state.classes, residual, record);
-  append(state.residualNames, original, residual);
+  append(state.classes, record.residualName, record);
+  append(state.residualNames, record.name, record.residualName);
 };
 
 const parseField = (state: ParseState, record: ClassRecord, line: string) => {
@@ -399,22 +418,21 @@ const parseField = (state: ParseState, record: ClassRecord, line: string) => {
   if (!validType(type, false)) return false;
   closeGroup(state);
   if (state.failure !== undefined) return true;
-  const field: MemberRecord<MappedField> = {
-    mapped: { ...memberOwner(name, record.name), type },
-    residual: undefined,
-    residualConflict: false,
-  };
+  const mapped = { ...memberOwner(name, record.name), type };
   if (
     !chargeIndex(
       state,
-      memberIndexBytes(field.mapped, record.name) +
-        stringBytes(obfuscated) +
-        96,
+      memberIndexBytes(mapped, record.name) + stringBytes(obfuscated) + 96,
     ) ||
-    !chargeProjection(state, record, fieldProjectionBytes(field.mapped))
+    !chargeProjection(state, record, fieldProjectionBytes(mapped))
   )
     return true;
-  append(record.fields, obfuscated, field);
+  const field: MemberRecord<MappedField> = {
+    mapped: { ...ownMemberOwner(mapped, record.name), type: ownString(type) },
+    residual: undefined,
+    residualConflict: false,
+  };
+  append(record.fields, ownString(obfuscated), field);
   state.records.fields++;
   state.last = field;
   return true;
@@ -542,6 +560,7 @@ const setReported = (
   value: string | null,
 ): void => {
   const before = state.reported[key];
+  if (before === value) return;
   const delta =
     (value === null ? 4 : jsonStringByteLength(value)) -
     (before === null ? 4 : jsonStringByteLength(before));
@@ -558,7 +577,7 @@ const setReported = (
   )
     return;
   state.headerBytes += delta;
-  state.reported[key] = value;
+  state.reported[key] = value === null ? null : ownString(value);
 };
 
 /** Attach R8 metadata the v1 resolver uses; other ids are ignored. */
@@ -592,8 +611,12 @@ const parseMetadata = (
       capacity(state, "index");
       return;
     }
-  } else if (!chargeIndex(state, stringBytes(signature.data))) return;
-  target.residual = signature.data;
+    // A pending method frame may still be discarded or deduplicated. Commit
+    // its signature together with its selected method in closeGroup.
+    target.residual = signature.data;
+  } else if (chargeIndex(state, stringBytes(signature.data))) {
+    target.residual = ownString(signature.data);
+  }
 };
 
 const parseComment = (state: ParseState, line: string, number: number) => {
@@ -690,15 +713,23 @@ export const parseProguardMapping = (
   });
 };
 
-/** Translate one original Java type to its residual DEX type, if verifiable. */
-export const residualDexType = (
+interface ResidualType {
+  readonly dimensions: number;
+  /** Primitive descriptor or unformatted residual binary class name. */
+  readonly element: string;
+  readonly className: boolean;
+}
+
+/** Resolve aliases once; consumers choose materialization or bounded comparison. */
+const residualType = (
   mapping: ProguardMapping,
   type: string,
-): string | undefined => {
+): ResidualType | undefined => {
   const element = arrayElement(type);
-  const dimensions = "[".repeat((type.length - element.length) / 2);
+  const dimensions = (type.length - element.length) / 2;
   const primitive = DEX_PRIMITIVES.get(element);
-  if (primitive !== undefined) return dimensions + primitive;
+  if (primitive !== undefined)
+    return { dimensions, element: primitive, className: false };
   const aliases = mapping.residualNames.get(element);
   let residual = element;
   if (aliases !== undefined) {
@@ -707,23 +738,74 @@ export const residualDexType = (
     for (const alias of aliases) if (alias !== first) return undefined;
     residual = first;
   }
-  return `${dimensions}L${residual.replaceAll(".", "/")};`;
+  return { dimensions, element: residual, className: true };
 };
 
-const residualDescriptor = (
+/** Translate one original Java type to its residual DEX type, if verifiable. */
+export const residualDexType = (
+  mapping: ProguardMapping,
+  type: string,
+): string | undefined => {
+  const resolved = residualType(mapping, type);
+  if (resolved === undefined) return undefined;
+  const dimensions = "[".repeat(resolved.dimensions);
+  return resolved.className
+    ? `${dimensions}L${resolved.element.replaceAll(".", "/")};`
+    : dimensions + resolved.element;
+};
+
+/** Match directly within the caller's descriptor without expanding alias strings. */
+const matchResidualType = (
+  mapping: ProguardMapping,
+  type: string,
+  observed: string,
+  offset: number,
+): number | undefined => {
+  const resolved = residualType(mapping, type);
+  if (resolved === undefined) return undefined;
+  const length =
+    resolved.dimensions +
+    resolved.element.length +
+    (resolved.className ? 2 : 0);
+  if (length > observed.length - offset) return undefined;
+  let cursor = offset;
+  for (let index = 0; index < resolved.dimensions; index++)
+    if (observed.charCodeAt(cursor++) !== 91) return undefined;
+  if (resolved.className && observed.charCodeAt(cursor++) !== 76)
+    return undefined;
+  for (let index = 0; index < resolved.element.length; index++) {
+    const code = resolved.element.charCodeAt(index);
+    if (observed.charCodeAt(cursor++) !== (code === 46 ? 47 : code))
+      return undefined;
+  }
+  if (resolved.className && observed.charCodeAt(cursor++) !== 59)
+    return undefined;
+  return cursor;
+};
+
+/** Each successful comparison consumes observed bytes, bounding prototype work. */
+const matchesResidualDescriptor = (
   mapping: ProguardMapping,
   record: MemberRecord<MappedMethod>,
-): string | undefined => {
-  if (record.residual !== undefined) return record.residual;
-  let parameters = "";
+  observed: string,
+): boolean => {
+  if (record.residual !== undefined) return record.residual === observed;
+  if (!observed.startsWith("(")) return false;
+  let cursor = 1;
   for (const type of record.mapped.parameter_types) {
-    const residual = residualDexType(mapping, type);
-    if (residual === undefined) return undefined;
-    parameters += residual;
+    const end = matchResidualType(mapping, type, observed, cursor);
+    if (end === undefined) return false;
+    cursor = end;
   }
-  const returned = residualDexType(mapping, record.mapped.return_type);
-  if (returned === undefined) return undefined;
-  return `(${parameters})${returned}`;
+  return (
+    observed[cursor] === ")" &&
+    matchResidualType(
+      mapping,
+      record.mapped.return_type,
+      observed,
+      cursor + 1,
+    ) === observed.length
+  );
 };
 
 /** Resolve an observed raw class name; several records are ambiguous. */
@@ -834,7 +916,7 @@ export const resolveProguardMethod = (
       records: mapping.classes.get(observed.className) ?? [],
       candidates: (record) => record.methods.get(observed.name) ?? [],
       matches: (record) =>
-        residualDescriptor(mapping, record) === observed.descriptor,
+        matchesResidualDescriptor(mapping, record, observed.descriptor),
       mismatch: "descriptor-mismatch",
     },
     "descriptor",
@@ -856,8 +938,10 @@ export const resolveProguardField = (
       records: mapping.classes.get(observed.className) ?? [],
       candidates: (record) => record.fields.get(observed.name) ?? [],
       matches: (record) =>
-        (record.residual ?? residualDexType(mapping, record.mapped.type)) ===
-        observed.type,
+        record.residual !== undefined
+          ? record.residual === observed.type
+          : matchResidualType(mapping, record.mapped.type, observed.type, 0) ===
+            observed.type.length,
       mismatch: "type-mismatch",
     },
     "type",

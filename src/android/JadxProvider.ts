@@ -17,13 +17,15 @@ import {
   AnalysisCancelledError,
   AnalysisCapabilityUnavailableError,
   AnalysisInputError,
-  AnalysisTimeoutError,
 } from "../domain/analysisErrorCore.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import { analysisErrorWithCleanupFailure } from "../domain/analysisErrorCleanup.js";
 import type { AndroidRequest } from "../domain/android/androidAnalysis.js";
 import type { AndroidMappingSource } from "../domain/android/androidMapping.js";
-import { readAndroidMapping } from "./AndroidMappingFile.js";
+import {
+  readAndroidMapping,
+  type AndroidMappingReadDeadline,
+} from "./AndroidMappingFile.js";
 import type { BinaryTarget } from "../domain/binaryTargetTypes.js";
 import { err, ok, type Result } from "../domain/result.js";
 import {
@@ -51,7 +53,6 @@ import type { JadxLauncher } from "./JadxMcpTransport.js";
 
 import { JadxSession } from "./JadxSession.js";
 import { captureJadxFailure } from "./JadxFailure.js";
-import { jadxOperationTimeoutGuidance } from "./JadxOperationTimeout.js";
 
 const BRIDGE_SOURCE = fileURLToPath(
   new URL("../../bridge/android/ReaJadxBridge.java", import.meta.url),
@@ -358,16 +359,38 @@ export class JadxProvider implements AndroidAnalysisPort {
           }),
         );
       clearTimeout(this.#idle);
-      if (this.#pendingCleanup !== undefined) {
-        const retired = await this.#retire();
-        if (!retired.ok) return retired;
-      }
-      const outcome = await this.#execute(target, request, { signal });
+      const retired =
+        this.#pendingCleanup === undefined
+          ? ok(undefined)
+          : await this.#retire();
+      const cleanup = await this.#retryPrerequisiteCleanup(request.operation);
+      const outcome: Outcome =
+        !retired.ok && !cleanup.ok
+          ? err(
+              analysisErrorWithCleanupFailure(
+                retired.error,
+                cleanup.error,
+                request.operation,
+              ).bindCleanupDependencies([retired.error, cleanup.error]),
+            )
+          : !retired.ok
+            ? retired
+            : !cleanup.ok
+              ? cleanup
+              : signal.aborted
+                ? err(
+                    new AnalysisCancelledError(request.operation, {
+                      cause: signal.reason,
+                    }),
+                  )
+                : await this.#execute(target, request, { signal });
       // A refusal before session work, such as a bad mapping, keeps the session.
       if (
         outcome.ok ||
         this.#retained !== undefined ||
-        this.#mappingCache !== undefined
+        this.#mappingCache !== undefined ||
+        this.#prerequisites.hasPending ||
+        this.#pendingCleanup !== undefined
       )
         this.#scheduleIdle();
       return outcome;
@@ -445,7 +468,7 @@ export class JadxProvider implements AndroidAnalysisPort {
   async #readMapping(
     request: AndroidRequest,
     signal: AbortSignal,
-    deadline: { readonly timeout: AbortSignal; readonly timeoutMs: number },
+    deadline: AndroidMappingReadDeadline,
   ): Promise<Result<AndroidMappingSource | undefined, AnalysisError>> {
     if (
       !("mapping_path" in request.input) ||
@@ -458,21 +481,23 @@ export class JadxProvider implements AndroidAnalysisPort {
       this.#prerequisites,
       signal,
       this.#mappingCache,
+      deadline,
     );
     if (read.ok) this.#mappingCache = read.value;
-    if (
-      read.ok ||
-      !(read.error instanceof AnalysisCancelledError) ||
-      !deadline.timeout.aborted ||
-      read.error.cause !== deadline.timeout.reason
-    )
-      return read;
-    return err(
-      new AnalysisTimeoutError(request.operation, deadline.timeoutMs, {
-        cause: deadline.timeout.reason,
-        ...jadxOperationTimeoutGuidance(deadline.timeoutMs),
-      }),
-    );
+    return read;
+  }
+
+  /** Every serialized request retries retained file owners before session reuse. */
+  async #retryPrerequisiteCleanup(
+    operation: string,
+  ): Promise<Result<void, AnalysisError>> {
+    if (!this.#prerequisites.hasPending) return ok(undefined);
+    try {
+      await this.#prerequisites.retryCleanup();
+      return ok(undefined);
+    } catch (cause: unknown) {
+      return err(analysisClientFailureForOperation(cause, "jadx", operation));
+    }
   }
 
   #scheduleIdle(): void {
@@ -480,6 +505,7 @@ export class JadxProvider implements AndroidAnalysisPort {
       this.#tail = this.#tail.then(async () => {
         this.#mappingCache = undefined;
         await this.#retire();
+        await this.#retryPrerequisiteCleanup("close_binary");
       });
     }, 60_000);
     this.#idle.unref();

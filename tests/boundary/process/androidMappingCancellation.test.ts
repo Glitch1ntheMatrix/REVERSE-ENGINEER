@@ -9,9 +9,13 @@ import {
   verifyJadxFixtureCleanup,
 } from "../../fixtures/android/jadx.js";
 
-it.each(["caller", "deadline"] as const)(
-  "keeps the first %s cause while the other signal expires during mapping descriptor finalization",
-  async (first) => {
+it.each(
+  (["caller", "deadline"] as const).flatMap((first) =>
+    [false, true].map((cleanupFails) => ({ first, cleanupFails })),
+  ),
+)(
+  "keeps first $first cause through mapping finalization (cleanupFails=$cleanupFails)",
+  async ({ first, cleanupFails }) => {
     const { apk, provider, launches } = await createJadxProtocolFixture(
       "normal",
       undefined,
@@ -40,6 +44,10 @@ it.each(["caller", "deadline"] as const)(
     // so the fixture's provider shutdown can join the owned file operation.
     onTestFinished(release);
     const owners: OwnedFileHandle[] = [];
+    let failClose = cleanupFails;
+    const cleanupCause = new Error(
+      "controlled mapping descriptor close failure",
+    );
     const originalClose = OwnedFileHandle.prototype.close;
     const close = vi
       .spyOn(OwnedFileHandle.prototype, "close")
@@ -54,6 +62,12 @@ it.each(["caller", "deadline"] as const)(
           entered();
           await held;
         }
+        if (
+          observed.dev === identity.dev &&
+          observed.ino === identity.ino &&
+          failClose
+        )
+          throw cleanupCause;
         await originalClose.call(this);
       });
     // Match the existing JADX startup deadline tests: control only the timer
@@ -100,24 +114,36 @@ it.each(["caller", "deadline"] as const)(
         throw new Error(
           "Mapping finalization must report the winning interruption",
         );
-      expect(result.error).toMatchObject({
+      const primary = result.error.cleanupPrimary ?? result.error;
+      expect(primary).toMatchObject({
         _tag:
           first === "caller"
             ? "AnalysisCancelledError"
             : "AnalysisTimeoutError",
-        cleanupIncomplete: false,
       });
-      expect(result.error.cause).toBe(
+      expect(primary.cause).toBe(
         first === "caller" ? callerReason : deadlineReason,
       );
-      expect(projectAnalysisError(result.error).code).toBe(
-        first === "caller" ? "cancelled" : "provider_timeout",
-      );
+      const expectedCode =
+        first === "caller" ? "cancelled" : "provider_timeout";
+      if (cleanupFails) {
+        expect(result.error.cleanupIncomplete).toBe(true);
+        expect(projectAnalysisError(result.error)).toMatchObject({
+          code: "cleanup_incomplete",
+          details: { execution_failure: expectedCode },
+        });
+        expect(owners[0]?.handle.fd).toBeGreaterThanOrEqual(0);
+        failClose = false;
+        await provider.close();
+      }
+      expect(result.error.cleanupIncomplete).toBe(false);
+      expect(projectAnalysisError(result.error).code).toBe(expectedCode);
       expect(clock).toHaveBeenCalledWith(2000);
       expect(owners).toHaveLength(1);
       expect(owners[0]?.handle.fd).toBe(-1);
       expect(launches).toHaveLength(0);
     } finally {
+      failClose = false;
       release();
       caller.abort("test cleanup");
       deadline.abort("test cleanup");

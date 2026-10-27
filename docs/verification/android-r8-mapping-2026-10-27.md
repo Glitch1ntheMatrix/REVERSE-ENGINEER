@@ -22,7 +22,7 @@ Both controls use main `4e67bc399951768737eeaf539f7bc9fa8373b244`:
 - The original #7137 author is 555aaditya; integration retains their co-author
   credit and preserves #7379's shared manifest contracts/default-package tests.
 
-The [source fixture](../../tests/fixtures/android/r8-mapping/README.md) has four classes,
+The [source fixture](https://github.com/morluto/rea/blob/main/tests/fixtures/android/r8-mapping/README.md) has four classes,
 eight fields and fifteen methods, including constructors, overloads, Unicode
 names, nested/default-package classes, arrays and renamed types in prototypes.
 The same actual R8 invocation emits DEX and mapping. Handwritten source
@@ -107,7 +107,7 @@ server and children were restricted to CPUs 0/1; Node heap was 3 GiB. Expensive
 checks ran serially under an 8 GiB sampled family-RSS stop and a 4 GiB host-free
 memory guard. No guard stopped a completed task and no OOM occurred.
 
-The [public stdio MCP harness](../../tests/support/analysis-efficiency/android-mapping.mjs) uses named live tool
+The [public stdio MCP harness](https://github.com/morluto/rea/blob/main/tests/support/analysis-efficiency/android-mapping.mjs) uses named live tool
 contracts and Ajv 2020 validation of SDK-converted advertised outputs. All
 correctness comparisons, hash reads, discovery and cleanup are included in the
 whole-harness cost. First-provider calls use fresh processes/JVMs; OS file caches
@@ -150,7 +150,7 @@ are not substituted for the completed proof-export task above.
 
 ## Whole-task token estimates
 
-[android-mapping-costs.py](../../tests/support/analysis-efficiency/android-mapping-costs.py) executed with tiktoken
+[android-mapping-costs.py](https://github.com/morluto/rea/blob/main/tests/support/analysis-efficiency/android-mapping-costs.py) executed with tiktoken
 0.14.0/o200k_base. Text projection counts a fixed task question, all discovered
 name/description/input schemas once per investigation, every RPC argument and
 all text replies, including proof export. SDK transport additionally counts
