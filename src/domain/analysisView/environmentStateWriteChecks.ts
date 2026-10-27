@@ -149,15 +149,15 @@ export class SimulatedState {
   }
 
   /**
-   * Put a collection's entities in the order serving gives when each of `writes` moves its entity in turn by `rule`,
-   * against the others' values before their own writes, or a create inserts it; returns the order they had.
+   * A collection's entity keys in the order serving gives when each of `writes` moves its entity in turn by `rule`,
+   * against the others' values before their own writes, or a create inserts it; undefined when that misses an entity.
    */
-  replay(
+  replayedOrder(
     type: string,
     collection: string,
     rule: Extract<InsertRule, { rule: "sorted" }>,
     writes: readonly PendingWrite[],
-  ): string[] {
+  ): string[] | undefined {
     const before =
       this.#collections.get(collectionTarget(type, collection)) ?? [];
     const held = new Set(before);
@@ -193,16 +193,26 @@ export class SimulatedState {
         { key, fields },
       );
     }
-    if (order.length === before.length)
-      this.restore(
-        type,
-        collection,
-        order.map((member) => member.key),
-      );
+    return order.length === before.length
+      ? order.map((member) => member.key)
+      : undefined;
+  }
+
+  /** Put a collection's entities in the order `replayedOrder` gives, returning the order they had. */
+  replay(
+    type: string,
+    collection: string,
+    rule: Extract<InsertRule, { rule: "sorted" }>,
+    writes: readonly PendingWrite[],
+  ): string[] {
+    const before =
+      this.#collections.get(collectionTarget(type, collection)) ?? [];
+    const order = this.replayedOrder(type, collection, rule, writes);
+    if (order !== undefined) this.restore(type, collection, order);
     return before;
   }
 
-  /** Put a collection's entities back in an order `arrange` returned. */
+  /** Put a collection's entities back in an order `replay` returned. */
   restore(type: string, collection: string, keys: readonly string[]): void {
     this.#served.arrange(keys);
     this.#collections.set(collectionTarget(type, collection), [...keys]);

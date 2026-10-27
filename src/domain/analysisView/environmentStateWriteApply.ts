@@ -590,9 +590,11 @@ export const writtenResponse = (
     (rendered, path) => {
       const tokens = pointerTokens(path);
       const kept = memberAt(shown, tokens);
-      return kept === undefined
-        ? rendered
-        : withMemberAt(rendered, tokens, kept);
+      if (kept !== undefined) return withMemberAt(rendered, tokens, kept);
+      // A member the answer left out of an object it showed stays out.
+      return isObject(memberAt(shown, tokens.slice(0, -1)))
+        ? withoutMemberAt(rendered, tokens)
+        : rendered;
     },
     entity,
   );
@@ -621,6 +623,23 @@ const withMemberAt = (
   const inner = object[first];
   return isObject(inner)
     ? { ...object, [first]: withMemberAt(inner, rest, value) }
+    : object;
+};
+
+/** A copy without the value under these member names, when the object holds every one of them. */
+const withoutMemberAt = (
+  object: JsonObject,
+  tokens: readonly string[],
+): JsonObject => {
+  const [first, ...rest] = tokens;
+  if (first === undefined || !Object.hasOwn(object, first)) return object;
+  if (rest.length === 0) {
+    const { [first]: _dropped, ...kept } = object;
+    return kept;
+  }
+  const inner = object[first];
+  return isObject(inner)
+    ? { ...object, [first]: withoutMemberAt(inner, rest) }
     : object;
 };
 

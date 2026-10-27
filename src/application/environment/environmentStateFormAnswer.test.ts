@@ -10,6 +10,7 @@ import {
   RENAMED_LABEL_ROWS,
   TITLE_ORDER_ROWS,
   UNLOADED_ANSWER_ROWS,
+  PARTIAL_OWNER_ROWS,
 } from "../../../tests/fixtures/environmentStateFormWrites.js";
 import { servedFrom } from "../../../tests/fixtures/environmentStateServing.js";
 import type { JsonValue } from "../../domain/jsonValue.js";
@@ -24,6 +25,20 @@ const field = (body: JsonValue | undefined, name: string): JsonValue[] => {
 };
 
 describe("served creates and updates modelled on form recordings", () => {
+  it("answers a create with the nested members its recorded answer showed, storing those its read showed", () => {
+    const tasks = servedFrom(PARTIAL_OWNER_ROWS);
+    const body = tasks.answer("post_tasks", {
+      body: { title: "Coil the ropes" },
+    }).body;
+    const { id, owner } = body as { id: number; owner: JsonValue };
+    expect(owner).toEqual({ id: 1 });
+    expect(
+      tasks.answer("get_tasks_by_id", { id: String(id) }).body,
+    ).toMatchObject({
+      owner: { id: 1, name: "Rea Admin" },
+    });
+  });
+
   it("creates an entity from its name alone, storing the members the form sent empty as it sent them", () => {
     const labels = servedFrom(formLabelRows());
     expect(
