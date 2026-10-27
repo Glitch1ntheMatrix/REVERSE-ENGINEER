@@ -183,7 +183,7 @@ const admitSpawnFailure = (error: Error): boolean => {
   return true;
 };
 
-/** Run a shell-free command while capturing its complete output bytes. */
+/** Run a shell-free command with no input while capturing its complete output bytes. */
 export const execFileBytes = (
   command: string,
   arguments_: readonly string[],
@@ -218,7 +218,7 @@ export const execFileBytes = (
     };
     try {
       if (stopSignal === undefined) {
-        execFile(
+        const child = execFile(
           command,
           [...arguments_],
           {
@@ -237,6 +237,8 @@ export const execFileBytes = (
               stderr,
             ),
         );
+        // This promise API exposes no input writer; EOF belongs to the owner.
+        child.stdin?.end();
         return;
       }
       startStoppableCommand(
@@ -273,6 +275,7 @@ const startStoppableCommand = (
   }
   let stopped: "abort" | "timeout" | "output-limit" | undefined;
   let processError: Error | null = null;
+  let rootFailed = false;
   let outputError: Error | undefined;
   let deadline: NodeJS.Timeout | undefined;
   let grace: NodeJS.Timeout | undefined;
@@ -281,12 +284,12 @@ const startStoppableCommand = (
   // pipe lifetime of descendants still using caller-owned temporary files.
   const child = spawn(command, [...arguments_], {
     ...execOptions,
-    stdio: "pipe",
+    stdio: ["ignore", "pipe", "pipe"],
     killSignal: stopSignal,
   });
   // The first stop request names the failure; a later one is not resent.
   const stop = (reason: "abort" | "timeout" | "output-limit"): void => {
-    if (stopped !== undefined) return;
+    if (stopped !== undefined || rootFailed || processError !== null) return;
     stopped = reason;
     child.kill(stopSignal);
     grace = setTimeout(() => child.kill("SIGKILL"), STOP_GRACE_MS);
@@ -321,6 +324,11 @@ const startStoppableCommand = (
   child.on("error", (error: Error) => {
     processError ??= error;
   });
+  child.on("exit", (code, exitSignal) => {
+    // A failed root has completed its outcome even while descendants retain
+    // its pipes. Finalization cancellation cannot replace that failure.
+    rootFailed = code !== 0 || exitSignal !== null;
+  });
   child.on("close", (code, exitSignal) => {
     signal?.removeEventListener("abort", onAbort);
     clearTimeout(deadline);
@@ -343,7 +351,9 @@ const startStoppableCommand = (
         ? new ExecFileOutputCancelledError(signal.reason)
         : stopped === "timeout" && timeout !== undefined
           ? timeoutError(command, timeout, processError)
-          : (outputError ?? processError);
+          : rootFailed && stopped === undefined
+            ? processError
+            : (outputError ?? processError);
     if (failure !== null && outputError !== undefined)
       Reflect.set(failure, "outputTruncated", true);
     complete(failure, out, diagnostic);

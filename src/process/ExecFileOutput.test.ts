@@ -53,6 +53,21 @@ it.each([undefined, "SIGTERM"] as const)(
   },
 );
 
+it.each([undefined, "SIGTERM"] as const)(
+  "closes unused command input with stop signal %s",
+  async (stopSignal) => {
+    const result = await execFileOutput(
+      process.execPath,
+      [
+        "-e",
+        'process.stdin.resume(); process.stdin.on("end", () => process.stdout.write("input closed"));',
+      ],
+      { timeout: 2_000, ...(stopSignal === undefined ? {} : { stopSignal }) },
+    );
+    expect(result.stdout).toBe("input closed");
+  },
+);
+
 describe("execFileOutput", () => {
   it("ignores non-Error and incomplete failure metadata", () => {
     expect(execFileOutputFailure("failure")).toBeUndefined();
@@ -756,5 +771,70 @@ it.each([
     if (!(failure instanceof Error))
       throw new Error("Expected Node callback cancellation");
     expect(failure.cause).toBe(reason);
+  },
+);
+
+it.skipIf(process.platform === "win32").each([
+  { code: 7, action: "abort" },
+  { code: 0, action: "abort" },
+  { code: 7, action: "overflow" },
+] as const)(
+  "owns root exit $code before inherited-pipe $action",
+  async ({ code, action }) => {
+    const directory = await createTestTempDirectory("rea-exec-exit-pipes-");
+    const exited = join(directory, "root-exited");
+    const release = join(directory, "release");
+    const descendant = [
+      'const fs = require("node:fs");',
+      "const parent = Number(process.argv[1]);",
+      "const timer = setInterval(() => {",
+      "  try { process.kill(parent, 0); } catch {",
+      `    fs.writeFileSync(${JSON.stringify(exited)}, "");`,
+      "  }",
+      `  if (!fs.existsSync(${JSON.stringify(release)})) return;`,
+      `  process.stdout.write(${JSON.stringify(action === "overflow" ? "x".repeat(64) : "late")});`,
+      "  clearInterval(timer); process.exit(0);",
+      "}, 10);",
+      "setTimeout(() => process.exit(0), 5000).unref();",
+    ].join("\n");
+    const program = [
+      'const { spawn } = require("node:child_process");',
+      `spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}, String(process.pid)], { stdio: "inherit" }).unref();`,
+      'process.stderr.write("root diagnostic");',
+      `process.exit(${code});`,
+    ].join("\n");
+    const controller = new AbortController();
+    let settled = false;
+    const execution = execFileOutput(process.execPath, ["-e", program], {
+      stopSignal: "SIGTERM",
+      signal: controller.signal,
+      maxBuffer: 32,
+    })
+      .catch((cause: unknown) => cause)
+      .finally(() => {
+        settled = true;
+      });
+    try {
+      expect(await waitForFile(exited)).toBe(true);
+      expect(settled).toBe(false);
+      if (action === "abort") controller.abort("late abort");
+      expect(settled).toBe(false);
+      await writeFile(release, "");
+      const failure = await execution;
+      expect(failure).toMatchObject(
+        code === 0
+          ? { _tag: "ExecFileOutputCancelledError", cause: "late abort" }
+          : { code: 7 },
+      );
+      expect(execFileOutputFailure(failure)).toMatchObject({
+        stderr: "root diagnostic",
+        stdout: action === "overflow" ? "x".repeat(32) : "late",
+        outputTruncated: action === "overflow",
+      });
+    } finally {
+      await writeFile(release, "");
+      controller.abort();
+      await execution;
+    }
   },
 );

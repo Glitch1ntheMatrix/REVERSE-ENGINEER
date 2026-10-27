@@ -14,7 +14,7 @@ import {
   spawnCapacityExhausted,
 } from "../process/ExecFileOutput.js";
 import type { ProviderAvailability } from "../application/AnalysisProvider.js";
-import type { ProviderRejectionCode } from "../contracts/providerSelection.js";
+import type { ProviderRejectionCode } from "../domain/providerSelection.js";
 import { fixedAllowanceOptions } from "../domain/fixedAllowanceRemediation.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import { isUnresolvedPathErrorCode } from "../filesystem/RegularFile.js";
