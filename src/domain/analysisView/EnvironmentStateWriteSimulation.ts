@@ -178,6 +178,8 @@ export class EnvironmentStateWriteSimulation {
   readonly #moved = new Set<string>();
   /** The writes to those targets' entities, in order. */
   #pending: PendingWrite[] = [];
+  /** Sorts, by type, that a whole list in collection order ruled out: moving the writes it showed by them gives another order. */
+  readonly #refutedSorts = new Map<string, Set<string>>();
   /** Creates whose insert rule a passing list check relied on, so it is no longer changed. */
   readonly #placed = new Set<string>();
   /** The order a read showed a type's collections sorted in after an update, when no create of it showed one. */
@@ -737,6 +739,7 @@ export class EnvironmentStateWriteSimulation {
       view.shape === "list" &&
       outcome.positional === undefined
     ) {
+      this.#refuteSorts(view, record);
       const shown = new Set(outcome.targets);
       for (const target of shown) this.#moved.delete(target);
       this.#pending = this.#pending.filter((write) => !shown.has(write.target));
@@ -1003,9 +1006,11 @@ export class EnvironmentStateWriteSimulation {
           ),
       )
       .map((entity) => entity.fields);
+    const refuted = this.#refutedSorts.get(view.type);
     for (const rule of rules.filter(
       (candidate) =>
         (current === undefined || !same(candidate, current)) &&
+        refuted?.has(JSON.stringify(candidate)) !== true &&
         keptInOrder(kept, candidate),
     )) {
       // A create placed by another sort shows the collection is not kept in this order.
@@ -1033,6 +1038,53 @@ export class EnvironmentStateWriteSimulation {
       this.#state.restore(view.type, line.collection, before);
     }
     return undefined;
+  }
+
+  /** Note the sorts by a field a pending write changed that this passing whole list in collection order rules out. */
+  #refuteSorts(
+    view: Extract<StateView, { shape: "list" }>,
+    record: StateRecordFacts,
+  ): void {
+    const line = this.#line(view, record);
+    if (
+      line === undefined ||
+      this.#wholeListing(view, record, () => true) === undefined
+    )
+      return;
+    const members = new Map(
+      this.#state
+        .members(view.type, line.collection)
+        .map((entity) => [
+          entityTarget(entity.type, entity.collection, entity.id),
+          entity.fields,
+        ]),
+    );
+    const writes = this.#pending.filter((write) => members.has(write.target));
+    const fields = new Set<string>();
+    for (const [index, { target, before }] of writes.entries()) {
+      if (before === null) continue;
+      const after =
+        writes.slice(index + 1).find((later) => later.target === target)
+          ?.before ?? members.get(target)!;
+      for (const field of Object.keys(after))
+        if (!same(ownMember(before, field), ownMember(after, field)))
+          fields.add(field);
+    }
+    const order = [...members.keys()];
+    const refuted = this.#refutedSorts.get(view.type) ?? new Set<string>();
+    for (const field of fields)
+      for (const direction of ["ascending", "descending"] as const) {
+        const rule = { rule: "sorted", field, direction } as const;
+        const replayed = this.#state.replayedOrder(
+          view.type,
+          line.collection,
+          rule,
+          writes,
+        );
+        if (replayed !== undefined && !same(replayed, order))
+          refuted.add(JSON.stringify(rule));
+      }
+    if (refuted.size > 0) this.#refutedSorts.set(view.type, refuted);
   }
 
   /** The successful check under another create insertion candidate, including its possibly different query-page coverage. */
