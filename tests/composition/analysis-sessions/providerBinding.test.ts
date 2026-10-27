@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -23,6 +23,7 @@ import { createAnalysisProfile } from "../../../src/domain/analysisProfile.js";
 import { AnalysisCancelledError } from "../../../src/domain/analysisErrorCore.js";
 import { ProviderAdapterError } from "../../../src/domain/providerAdapterError.js";
 import { err, ok } from "../../../src/domain/result.js";
+import { thinMach } from "../../../src/domain/binaryTarget.fixture.js";
 
 type DeclaredOperation = Exclude<AnalysisOperation, "health">;
 
@@ -128,7 +129,7 @@ describe("target-bound provider routing", () => {
   });
 
   it("preserves bundle-root identity for artifact inventory operations", async () => {
-    const target = await databaseTarget();
+    const target = await bundleTarget();
     const analysis = deepProvider("alpha");
     const artifact = auxiliaryProvider("artifact", "inventory_artifact");
     const session = selectableSession([analysis.provider], artifact);
@@ -389,6 +390,21 @@ const databaseTarget = async (): Promise<string> => {
   const path = join(directory, "fixture.hop");
   await writeFile(path, "fixture");
   return path;
+};
+
+const bundleTarget = async (): Promise<string> => {
+  const directory = await createTestTempDirectory(
+    "rea-provider-binding-bundle-",
+  );
+  const app = join(directory, "Fixture.app");
+  const executable = join(app, "Fixture");
+  await mkdir(app, { recursive: true });
+  await writeFile(
+    join(app, "Info.plist"),
+    "<plist><dict><key>CFBundleExecutable</key><string>Fixture</string></dict></plist>",
+  );
+  await writeFile(executable, thinMach(0xfeedfacf, 0x0100000c));
+  return realpath(app);
 };
 
 const bindingStatus = async (session: BinarySession) =>
