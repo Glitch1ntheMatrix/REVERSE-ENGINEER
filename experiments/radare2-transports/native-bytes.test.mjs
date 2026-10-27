@@ -10,6 +10,7 @@ import { RegularFileCleanupFailure } from "../../dist/filesystem/OwnedRegularFil
 import { projectAnalysisError } from "../../dist/domain/analysisErrorProjection.js";
 import {
   byteInputSchema,
+  digestTarget,
   MAX_NATIVE_READ_BYTES,
   readNativeBytes,
   retryNativeByteCleanup,
@@ -286,6 +287,70 @@ void test("failed file cleanup preserves completed verification or primary failu
       await readNativeBytes(input, async () => native(), path),
     );
     assert.equal(recovered.result.complete, true);
+  }
+});
+
+void test("cancelled reads and hashes retain their reason and failed-close lease through retry", async (context) => {
+  for (const operation of ["bytes", "digest"]) {
+    for (const stage of ["read", "close"]) {
+      const controller = new AbortController();
+      const reason = { operation, stage };
+      const originalOpen = fs.open;
+      let denied = true;
+      let failure;
+      const intercepted = context.mock.method(fs, "open", async (...args) => {
+        const handle = await originalOpen(...args);
+        const read = handle.read.bind(handle);
+        const close = handle.close.bind(handle);
+        handle.read = async (...readArgs) => {
+          const value = await read(...readArgs);
+          if (stage === "read") controller.abort(reason);
+          return value;
+        };
+        handle.close = async () => {
+          if (stage === "close") controller.abort(reason);
+          if (denied) throw new Error("Injected close denial");
+          return close();
+        };
+        return handle;
+      });
+      syncBuiltinESMExports();
+      try {
+        if (operation === "digest") {
+          await assert.rejects(
+            digestTarget(path, controller.signal),
+            (cause) => {
+              failure = cause;
+              return true;
+            },
+          );
+        } else {
+          const result = await readNativeBytes(
+            input,
+            async () => native(),
+            path,
+            {
+              signal: controller.signal,
+            },
+          );
+          assert.equal(result.ok, false);
+          failure = result.error;
+          assert.equal(failure.partialObservation.result.bytes_hex, "30405060");
+        }
+        assert.equal(failure._tag, "AnalysisCancelledError");
+        assert.equal(failure.cause, reason);
+        assert.equal(failure.cleanupIncomplete, true);
+        assert.equal(await retryNativeByteCleanup(), 1);
+      } finally {
+        denied = false;
+        assert.equal(await retryNativeByteCleanup(), 0);
+        intercepted.mock.restore();
+        syncBuiltinESMExports();
+      }
+      assert.equal(failure.cleanupIncomplete, false);
+      assert.equal(projectAnalysisError(failure).code, "cancelled");
+      assert.equal(failure.cause, reason);
+    }
   }
 });
 

@@ -231,27 +231,28 @@ async function withRegularFile(path, signal, operation) {
         ? { primary_failure: outcome.cause?.message ?? String(outcome.cause) }
         : {}),
     };
-    if (cause instanceof RegularFileCleanupFailure) {
-      const failure = error(
-        "Independent file-read cleanup remains incomplete",
-        {
-          cause,
-          partialObservation,
-          cleanup: {
-            reason: "Owned file close failed; automatic retry remains active",
-            resources: [path],
-          },
-        },
-      );
-      retainedHandles.get(cause.owner)?.lease.bindCleanupError(failure);
+    const cancelled = regularFileCancellation(cause);
+    if (cause instanceof RegularFileCleanupFailure || cancelled) {
+      const details = {
+        cause: cancelled ? cancelled.reason : cause,
+        partialObservation,
+        ...(cause instanceof RegularFileCleanupFailure
+          ? {
+              cleanup: {
+                reason:
+                  "Owned file close failed; automatic retry remains active",
+                resources: [path],
+              },
+            }
+          : {}),
+      };
+      const failure = cancelled
+        ? new AnalysisCancelledError(OPERATION, details)
+        : error("Independent file-read cleanup remains incomplete", details);
+      if (cause instanceof RegularFileCleanupFailure)
+        retainedHandles.get(cause.owner)?.lease.bindCleanupError(failure);
       throw failure;
     }
-    const cancelled = regularFileCancellation(cause);
-    if (cancelled)
-      throw new AnalysisCancelledError(OPERATION, {
-        cause: cancelled.reason,
-        partialObservation,
-      });
     throw cause;
   }
 }
