@@ -272,22 +272,24 @@ const locateThinMachO = async (
     }
     if (cmd === LC_SEGMENT || cmd === LC_SEGMENT_64) {
       const segment64 = cmd === LC_SEGMENT_64;
-      const segmentHeader = segment64 ? 72 : 56;
       const sectionSize = segment64 ? 80 : 68;
-      const name = cString(commands, offset + 8, 16);
+      const parsedSegment = readMachoSegmentHeader(
+        commands.subarray(offset, offset + cmdsize),
+        segment64,
+        little,
+      );
+      // Incomplete segments cannot establish a SEA carrier. Interpret names
+      // and section framing only from the shared fixed-record observation.
+      const segment = parsedSegment.ok ? parsedSegment.value : undefined;
+      const name =
+        segment === undefined ? undefined : cString(segment.nameBytes, 0, 16);
       if (
-        (name === "NODE_SEA" || name === "__NODE_SEA") &&
-        cmdsize >= segmentHeader
+        segment !== undefined &&
+        (name === "NODE_SEA" || name === "__NODE_SEA")
       ) {
-        const parsedSegment = readMachoSegmentHeader(
-          commands.subarray(offset, offset + cmdsize),
-          segment64,
-          little,
-        );
-        if (!parsedSegment.ok)
-          throw formatFailure(NODE_SEA_MACHO_SEGMENT_TRUNCATED);
-        const nsects = parsedSegment.value.sectionCount;
-        const table = offset + parsedSegment.value.headerSize;
+        const segmentHeader = segment.headerSize;
+        const nsects = segment.sectionCount;
+        const table = offset + segmentHeader;
         if (
           nsects > Math.floor((cmdsize - segmentHeader) / sectionSize) ||
           table + nsects * sectionSize > offset + cmdsize
@@ -591,8 +593,9 @@ const locatePeResources = async (carrier: Carrier): Promise<BlobRange[]> => {
   if (bytes === undefined) throw formatFailure(NODE_SEA_TRUNCATED);
   // A native-looking file need not be an admitted PE image. Once the layout
   // is admitted, resource errors remain failures rather than inferred absence.
+  let layout: ReturnType<typeof readPeResourceLayout>;
   try {
-    readPeResourceLayout(bytes);
+    layout = readPeResourceLayout(bytes);
   } catch (cause) {
     if (cause instanceof ArtifactReaderFailure && cause.reason === "format")
       return [];
@@ -611,6 +614,7 @@ const locatePeResources = async (carrier: Carrier): Promise<BlobRange[]> => {
       max_entries: MAX_INSPECT_PE_DIRECTORY_ENTRIES,
     },
     carrier.signal,
+    layout,
   );
   return resources.resources.flatMap((resource) => {
     if (
