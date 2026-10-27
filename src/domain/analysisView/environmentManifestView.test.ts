@@ -9,6 +9,7 @@ import {
   projectAnalysisView,
   type AnalysisViewRequest,
 } from "./analysisView.js";
+import { environmentManifestViewRequestSchema } from "./environmentManifestView.js";
 
 type ManifestView = Extract<
   AnalysisViewRequest,
@@ -1506,4 +1507,12 @@ it("templates a digit-free literal in a fixed-length family that one opt-in para
     "GET /api/workflows/{uid}",
     "PATCH /api/workflows/{uid}",
   ]);
+});
+
+it("advertises the 32-segment route limit in prefix-variance template rules description", () => {
+  const description =
+    environmentManifestViewRequestSchema.shape.template_rules.description;
+  expect(description).toContain(
+    "prefix-variance templates a literal at a position another tool templates by one of the other opt-in rules after the same preceding segments, at any method or length (comparing routes of at most 32 segments)",
+  );
 });
