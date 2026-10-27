@@ -26,6 +26,35 @@ import {
 const execFileAsync = promisify(execFile);
 const CLI_INTEGRATION_TIMEOUT_MS = 60_000;
 
+const writeUnavailableOwnershipCompiler = async (root: string) => {
+  // Controlled protocol facts force the refusal independently of native
+  // platform-binary visibility. No token ever authorizes a signal.
+  const helper = `#!${process.execPath}
+const arguments_ = process.argv.slice(2);
+const identities = arguments_[0] === "--identities";
+const pids = (identities ? arguments_.slice(1) : arguments_).map(Number);
+console.log(JSON.stringify({ results: pids.map(pid => identities ? {
+  pid, state: "readable", identity: "controlled-start-" + pid,
+  lifecycle: "non-zombie",
+  relation: { state: "observed", parent_pid: 1, process_group_id: pid },
+} : {
+  pid, state: "unavailable", reason: "platform_binary_environment_withheld",
+}) }));
+`;
+  const compiler = join(root, "controlled-swiftc");
+  await writeFile(
+    compiler,
+    `#!${process.execPath}
+const fs = process.getBuiltinModule("node:fs");
+const output = process.argv[process.argv.indexOf("-o") + 1];
+fs.writeFileSync(output, ${JSON.stringify(helper)});
+fs.chmodSync(output, 0o755);
+`,
+    { mode: 0o755 },
+  );
+  return compiler;
+};
+
 describe("documented process CLI workflow", () => {
   cliTest(
     "feeds the documented JSON capture into the comparison CLI",
@@ -79,9 +108,10 @@ describe("documented process CLI workflow", () => {
 
 describe("process CLI cleanup errors", () => {
   cliTest.skipIf(process.platform !== "darwin")(
-    "reports the retained capture root when platform-binary finalization cannot establish ownership",
+    "reports the retained capture root with a controlled unavailable ownership reader",
     async ({ cli }) => {
       const root = await createTestTempDirectory("rea-process-cli-cleanup-");
+      const compiler = await writeUnavailableOwnershipCompiler(root);
       const scenario = join(root, "scenario.json");
       const marker = join(root, "target.pid");
       await writeFile(
@@ -90,7 +120,7 @@ describe("process CLI cleanup errors", () => {
           executable: "/bin/sh",
           arguments: [
             "-c",
-            'printf "%s" "$$" > "$1"; exec /bin/sleep 3',
+            'printf "%s" "$$" > "$1"; exec /bin/sleep 5',
             "capture-cleanup-fixture",
             marker,
           ],
@@ -101,11 +131,17 @@ describe("process CLI cleanup errors", () => {
       );
       const result = await cli.run({
         arguments: ["capture-process", scenario, "--json"],
-        environment: { TMPDIR: root },
+        environment: {
+          TMPDIR: root,
+          REA_DARWIN_SWIFTC_PATH: compiler,
+          SDKROOT: root,
+          REA_DARWIN_MODULE_CACHE_PATH: join(root, "modules"),
+        },
       });
       const targetPid = Number(await readFile(marker, "utf8"));
       expect(Number.isSafeInteger(targetPid) && targetPid > 0).toBe(true);
-      // The fail-closed command deliberately leaves the platform binary alive.
+      expect(process.kill(targetPid, 0), "the target remains alive").toBe(true);
+      // The controlled refusal deliberately leaves the real child alive.
       // Observe its bounded natural exit before the temporary fixture is removed.
       await expect
         .poll(() => observeProcessStartIdentity(targetPid), {
