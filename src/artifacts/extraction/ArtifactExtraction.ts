@@ -15,7 +15,10 @@ import {
 } from "../ArtifactEmbeddedFormatProbes.js";
 import { withArtifactRegularFile } from "../ArtifactFileOperation.js";
 import { readArtifactFileChunks } from "../readArtifactFileChunks.js";
-import { sameRegularFileState } from "../../filesystem/RegularFile.js";
+import {
+  sameRegularFileState,
+  type StableRegularFileDescriptor,
+} from "../../filesystem/RegularFile.js";
 import type {
   ArtifactCleanupAttempt,
   ArtifactResourceOwner,
@@ -365,6 +368,7 @@ const materializeSelection = async ({
   let localReaderOwner: ArtifactResourceOwner | undefined = readerOwner;
   let output: SafeOutputTree | undefined;
   let completed: ArtifactExtractionResult | undefined;
+  let pendingFailure: unknown;
   const extracted: ExtractedOccurrence[] = [];
   try {
     await reader.prepareContainer?.(inventory.manifest.root_sha256, signal);
@@ -410,13 +414,20 @@ const materializeSelection = async ({
         traversal,
         signal,
       });
-      if (zipSource !== undefined)
+      if (isZipPackageFormat(inventory.manifest.root_format)) {
+        const admission = transferredSource?.admission;
+        if (!isStableRegularFileDescriptor(admission))
+          throw new ArtifactReaderFailure(
+            "integrity",
+            `Transferred ZIP source is not a stable regular-file descriptor: ${sourcePath}`,
+          );
         await revalidateTransferredZipSource(
           sourcePath,
-          zipSource.source,
+          admission,
           inventory.manifest.root_sha256,
           signal,
         );
+      }
     } else {
       await writeSelectedEntries({
         reader,
@@ -445,7 +456,6 @@ const materializeSelection = async ({
         [sourceClose],
         { kind: "artifact-inventory", inventory },
       );
-    if (transferredSource !== undefined) abortIfNeeded(signal);
     extracted.sort((left, right) =>
       compareUnicodeCodePoints(left.relative_path, right.relative_path),
     );
@@ -463,6 +473,7 @@ const materializeSelection = async ({
     if (output !== undefined) await output.commit(signal);
     return completed;
   } catch (cause: unknown) {
+    pendingFailure = cause;
     const cleanupFailures = await releaseExtractionOwners(
       input.resourceScope,
       localReaderOwner,
@@ -481,6 +492,19 @@ const materializeSelection = async ({
     }
     if (output?.published === true && completed !== undefined) return completed;
     throw cause;
+  } finally {
+    // Cancellation must run after the last close for every source. A pure
+    // check throw must not mask an error already propagating from the try.
+    try {
+      abortIfNeeded(signal);
+    } catch (abortCause: unknown) {
+      if (
+        pendingFailure === undefined &&
+        abortCause instanceof ArtifactReaderFailure &&
+        abortCause.reason === "cancelled"
+      )
+        throw abortCause;
+    }
   }
 };
 
@@ -530,9 +554,36 @@ export const formatDryRunPlanPageLimitation = (
     ? `Dry-run plan entries are paged (${String(returnedEntries)} of ${String(totalEntries)} entries returned at offset ${String(offset)}; pass plan_offset=${String(nextOffset)} to inspect remaining entries).`
     : `Dry-run plan entries are paged (${String(returnedEntries)} of ${String(totalEntries)} entries returned at offset ${String(offset)}).`;
 
+export const isStableRegularFileDescriptor = (
+  value: unknown,
+): value is StableRegularFileDescriptor => {
+  if (value === null || typeof value !== "object") return false;
+  const candidate = value as {
+    readonly handle?: { readonly read?: unknown; readonly stat?: unknown };
+    readonly initial?: {
+      readonly size?: unknown;
+      readonly dev?: unknown;
+      readonly ino?: unknown;
+      readonly mode?: unknown;
+      readonly mtimeMs?: unknown;
+      readonly ctimeMs?: unknown;
+    };
+  };
+  return (
+    typeof candidate.handle?.read === "function" &&
+    typeof candidate.handle?.stat === "function" &&
+    typeof candidate.initial?.size === "number" &&
+    typeof candidate.initial?.dev === "number" &&
+    typeof candidate.initial?.ino === "number" &&
+    typeof candidate.initial?.mode === "number" &&
+    typeof candidate.initial?.mtimeMs === "number" &&
+    typeof candidate.initial?.ctimeMs === "number"
+  );
+};
+
 const revalidateTransferredZipSource = async (
   path: string,
-  source: TransferredZipInventorySource["source"],
+  source: StableRegularFileDescriptor,
   expectedSha256: string,
   signal?: AbortSignal,
 ): Promise<void> => {

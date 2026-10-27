@@ -45,7 +45,6 @@ import { SafeOutputTree } from "../SafeOutputTree.js";
 import { ZipArtifactReader } from "../ZipArtifactReader.js";
 import { DirectoryArtifactReader } from "../DirectoryArtifactReader.js";
 import { createTestTempDirectory } from "../../../tests/fixtures/temporaryDirectory.js";
-import { asarHeaderBytes } from "../../../tests/fixtures/asarHeader.js";
 import {
   DRY_RUN_NON_ASCII_CASE_LIMITATION,
   DRY_RUN_NON_FILE_DRIFT_SUMMARY_LIMITATION,
