@@ -106,7 +106,8 @@ validates the SDK-converted advertised output schemas, and checks all observed
 fields and methods against this oracle. `--variants` also checks partial and
 malformed records, duplicate class blocks and conflicting residual metadata
 using copies of the same generated mapping. The 2026-10-27 fixture run passed
-41 calls: two full 19-call investigations plus three negative cases. Mappings
+43 calls with summary delivery: two 20-call investigations, including complete
+Evidence exports, plus three negative cases. Mappings
 and DEX are generated together; association with the selected APK remains a
 caller claim rather than a verified build identity.
 
