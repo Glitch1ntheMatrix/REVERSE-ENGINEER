@@ -125,6 +125,10 @@ for (const scenario of scenarios)
         expect(result.stdout).not.toContain("UNKNOWN");
         if (outcome === "failure")
           expect(result.stdout).toContain("target_unavailable");
+        if (scenario.format === "md" && outcome === "failure")
+          expect(result.stdout).toContain(
+            `## ${scenario.full ? "error." : ""}details.reported_limits.formatted_characters\n\nnull`,
+          );
         if (scenario.format === "md" && scenario.full) {
           expect(result.stdout).toMatch(/^## ok\n\nfalse$/m);
           expect(result.stdout).toMatch(
