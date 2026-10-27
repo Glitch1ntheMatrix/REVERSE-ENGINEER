@@ -26,6 +26,18 @@ import {
 const execFileAsync = promisify(execFile);
 const CLI_INTEGRATION_TIMEOUT_MS = 60_000;
 
+const cleanupTargetSource = `
+const fs = process.getBuiltinModule("node:fs");
+const [marker, release] = process.argv.slice(2);
+if (!marker || !release) throw new Error("Missing cleanup target paths");
+fs.writeFileSync(marker, String(process.pid));
+setTimeout(() => process.exit(2), ${CLI_INTEGRATION_TIMEOUT_MS}).unref();
+const waiting = setInterval(() => {
+  if (!fs.existsSync(release)) return;
+  clearInterval(waiting);
+}, 10);
+`;
+
 const writeUnavailableOwnershipCompiler = async (root: string) => {
   // Controlled protocol facts force the refusal independently of native
   // platform-binary visibility. No token ever authorizes a signal.
@@ -117,60 +129,80 @@ describe("process CLI cleanup errors", () => {
       const compiler = await writeUnavailableOwnershipCompiler(root);
       const scenario = join(root, "scenario.json");
       const marker = join(root, "target.pid");
+      const release = join(root, "release-target");
+      const target = join(root, "cleanup-target.cjs");
+      await writeFile(target, cleanupTargetSource);
       await writeFile(
         scenario,
         JSON.stringify({
-          executable: "/bin/sh",
-          arguments: [
-            "-c",
-            'printf "%s" "$$" > "$1"; exec /bin/sleep 5',
-            "capture-cleanup-fixture",
-            marker,
-          ],
+          executable: process.execPath,
+          arguments: [target, marker, release],
           timeout_ms: 500,
           idle_timeout_ms: 500,
           finalization_ms: 100,
         }),
       );
-      const result = await cli.run({
-        arguments: ["capture-process", scenario, "--json"],
-        environment: {
-          TMPDIR: root,
-          REA_DARWIN_SWIFTC_PATH: compiler,
-          SDKROOT: root,
-          REA_DARWIN_MODULE_CACHE_PATH: join(root, "modules"),
-        },
-      });
-      const targetPid = Number(await readFile(marker, "utf8"));
-      expect(Number.isSafeInteger(targetPid) && targetPid > 0).toBe(true);
-      expect(process.kill(targetPid, 0), "the target remains alive").toBe(true);
-      // The controlled refusal deliberately leaves the real child alive.
-      // Observe its bounded natural exit before the temporary fixture is removed.
-      await expect
-        .poll(() => observeProcessStartIdentity(targetPid), {
-          timeout: 7_000,
-          interval: 25,
-        })
-        .toBeUndefined();
-      expect(result.exitCode, result.stdout || result.stderr).toBe(1);
-      const retained = (await readdir(root)).filter((name) =>
-        /^rea-process-(?!token-)/u.test(name),
-      );
-      expect(retained).toHaveLength(1);
-      const retainedRoot = retained[0];
-      if (retainedRoot === undefined) throw new Error("Missing retained root");
-      expect(result.json).toMatchObject({
-        code: "cleanup_incomplete",
-        message: expect.stringContaining(
-          "platform_binary_environment_withheld",
-        ),
-        details: {
-          resources: ["owned_process_group", join(root, retainedRoot)],
-          cleanup_report: {
-            temporary_root: { state: "unverified" },
+      try {
+        const result = await cli.run({
+          arguments: ["capture-process", scenario, "--json"],
+          environment: {
+            TMPDIR: root,
+            REA_DARWIN_SWIFTC_PATH: compiler,
+            SDKROOT: root,
+            REA_DARWIN_MODULE_CACHE_PATH: join(root, "modules"),
           },
-        },
-      });
+        });
+        const targetPid = Number(await readFile(marker, "utf8"));
+        expect(Number.isSafeInteger(targetPid) && targetPid > 0).toBe(true);
+        expect(process.kill(targetPid, 0), "the target remains alive").toBe(
+          true,
+        );
+        expect(result.exitCode, result.stdout || result.stderr).toBe(1);
+        const retained = (await readdir(root)).filter((name) =>
+          /^rea-process-(?!token-)/u.test(name),
+        );
+        expect(retained).toHaveLength(1);
+        const retainedRoot = retained[0];
+        if (retainedRoot === undefined)
+          throw new Error("Missing retained root");
+        expect(result.json).toMatchObject({
+          code: "cleanup_incomplete",
+          message: expect.stringContaining(
+            "platform_binary_environment_withheld",
+          ),
+          details: {
+            resources: ["owned_process_group", join(root, retainedRoot)],
+            cleanup_report: {
+              temporary_root: { state: "unverified" },
+            },
+          },
+        });
+      } finally {
+        // Release even when the CLI or an assertion fails. A target starting
+        // after this point also sees the release and exits without a signal.
+        await writeFile(release, "release");
+        const targetPid = await readFile(marker, "utf8").then(
+          (value) => Number(value),
+          (cause: unknown) => {
+            if (
+              cause instanceof Error &&
+              "code" in cause &&
+              cause.code === "ENOENT"
+            )
+              return undefined;
+            throw cause;
+          },
+        );
+        if (targetPid !== undefined) {
+          expect(Number.isSafeInteger(targetPid) && targetPid > 0).toBe(true);
+          await expect
+            .poll(() => observeProcessStartIdentity(targetPid), {
+              timeout: 7_000,
+              interval: 25,
+            })
+            .toBeUndefined();
+        }
+      }
     },
     CLI_INTEGRATION_TIMEOUT_MS,
   );
