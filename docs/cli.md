@@ -73,9 +73,14 @@ arbitrary nested graph array.
 A top-level array emits its elements in source order. An object must have one
 clear `rows`, `items`, `records`, or `occurrences` array, directly or under
 `page`. Evidence uses the same boundaries inside `normalized_result`.
-An arbitrary report or a scalar selection is refused with an actionable error;
-use `--format json` for a complete document. If several collections exist,
-select one with `--filter-output`, for example `normalized_result.rows`.
+Any other selection is refused before a record is written, including an
+arbitrary report, a scalar, a nested array elsewhere, and a columnar object such
+as the `inspect-sqlite-database --table` `normalized_result.rows`
+(`{columns, values}`). The refusal is the caller error `invalid_request`
+(`invalid_input`) and names the selection and its observed shape; the analysis
+itself succeeded, so use `--format json` for the complete document. If several
+collections exist, select one with `--filter-output`, for example
+`normalized_result.rows` for an analysis view.
 
 Object collections finish with a control record:
 
@@ -236,6 +241,16 @@ Formats 2, 3 and 4 retain header, directory and integrity facts. Compact deliver
 keeps complete Evidence in the requested bundle. See [Godot PCK](godot-pck.md)
 for embedded packs, batch queries and unknown encrypted coverage.
 
+Inspect a Node.js SEA carrier without running it:
+
+```sh
+rea inspect-artifact ./application --json
+rea extract-artifact ./application --json
+```
+
+See [Node.js SEA](node-sea.md) for supported layouts, script and asset paths,
+fuse observations, and the real-fixture verification lane.
+
 Inspect local model declarations without loading weights:
 
 ```bash
@@ -259,8 +274,8 @@ The command decodes a version 24, 27, 29, 31 or 39 `global-metadata.dat` and rep
 images, type, method and member names, string literals, index ranges, header
 sections and SHA-256. With `--binary PATH` it also reads the matching
 `GameAssembly.dylib`, `GameAssembly.dll` or `libil2cpp.so` (never runs it) and
-links each method to its code address; `--ghidra-seeds PATH` then writes Ghidra
-function seeds. It does not decrypt metadata. MCP defaults to compact counts
+links each method to its code address; `--generic-instances` adds generic
+method instances and `--ghidra-seeds PATH` then writes Ghidra function seeds. It does not decrypt metadata. MCP defaults to compact counts
 with retained Evidence; query indexed rows with filters, batch indices and
 selected fields. The CLI defaults to complete Evidence;
 `--detail summary --evidence_output FILE` exports the full result to a new file
@@ -310,6 +325,33 @@ rea inspect-elf-notes /absolute/path/to/program --json
 The workflow reports note owners, types, descriptor hashes, and GNU build-id
 or ABI-tag fields when those descriptors match. A missing note table is
 observed absence of those declarations. See [ELF note tables](elf-notes.md).
+
+Inspect an Apple `.ips` crash report without executing a target:
+
+```bash
+rea inspect-apple-ips /absolute/path/to/report.ips --json
+```
+
+The workflow reports first-line metadata, process/exception/termination facts,
+threads, usedImages, lossless integer registers, and documented crash classes
+when `bug_type` is `"309"`. Other DiagnosticReports types return no crash
+result. See [Apple IPS crash reports](apple-ips.md).
+Inspect Linux kernel module metadata without executing the module or requiring
+`modinfo`:
+
+```bash
+rea inspect-kernel-module /absolute/path/to/module.ko --json
+```
+
+The workflow reports ordered `.modinfo` keys (duplicate `alias` and `parm`
+entries preserved), `__versions` symbol CRCs, presence of
+`.gnu.linkonce.this_module` and `__ksymtab` sections, observed `.init.text`
+and `.exit.text` sizes, and an appended signature trailer. `struct module` is
+not decoded and the signature is not validated. Other ELF types are not
+applicable. gzip, xz, and zstd containers are unsupported and name
+`external_decompression` as the next probe: decompress with an external
+utility, then inspect the decompressed file. See
+[Linux kernel modules](kernel-modules.md).
 
 Inspect a CPython 3.7–3.13 `.pyc` header and nested marshal code objects
 without executing bytecode or installing Python:
@@ -364,7 +406,7 @@ Run `rea --help` or a command's `--help` for arguments and output options.
 The [generated catalog](mcp-contracts.md#generated-catalog) lists all CLI commands and MCP
 tools. Provider-specific target support is described in the
 [native guide](native-investigation.md), [DOS guide](ghidra-dos.md),
-[raw binary guide](raw-binary.md), and
+[raw binary guide](raw-binary.md), [GameCube DOL guide](ghidra-dol.md), and
 [Windows Ghidra guide](windows-ghidra-p0.md).
 
 ## Choose a provider
@@ -401,7 +443,13 @@ The selected provider remains bound to the session until an explicit switch
 or close. Provider failures are returned with their original reason. For an
 `ambiguous` selection error, choose from `details.candidate_ids`; for
 `provider_unavailable`, follow `message`, `remediation.action`, and the original
-reasons in `details.rejections`. For Hopper, Ghidra, IDA, JADX, and Kuna, run
+reasons in `details.rejections`. Each rejection names its `origin`: `availability`
+entries describe local readiness failures, including missing configuration or an
+invalid existing registration; they do not establish target support. `target`
+entries record a refused kind, format, architecture, or role. An availability-only
+message describes the recorded rejections without claiming that every provider
+is unconfigured or that target support is known.
+For Hopper, Ghidra, IDA, JADX, and Kuna, run
 `rea doctor --provider ID --json` to diagnose the selected engine. Other adapters,
 such as `pwntools-elf`, report their configuration requirements directly and are
 not accepted by `doctor --provider`. See
@@ -428,13 +476,25 @@ an exact result when the target bytes, operation, parameters, provider and
 settings match. Mutations and cursor-dependent calls are excluded from the
 cache. Snapshot files are local and use owner-only permissions.
 
-Importing an Evidence bundle refreshes retained subject display names and paths.
+One-shot binary CLI Evidence reports the exact path argument in `caller_input_path`,
+including relative spelling and symlink aliases. Its subject identifies the
+inspected artifact; `caller_input_path` does not change the Evidence ID or
+snapshot query. A replay reports the current invocation's path while leaving
+the saved Evidence unchanged. Provider inspections continue to include the
+established `parameters.input_path` field.
+
+Importing an Evidence bundle refreshes retained request and subject display metadata.
 It preserves cached analysis results, including observations for other targets.
 Snapshot bindings that use a replaced record retain its updated display path.
 
 Dispatching a provider metadata write invalidates the active session's snapshot cache,
 even if its reply fails: the provider may already have applied the write.
 Close and reopen the target before importing or saving another snapshot.
+
+Saved snapshots include only cache entries whose subject identifies the selected
+target. Unbound observations and observations of child artifacts remain available
+in the open session and its Evidence bundle; they are excluded from the target's
+saved replay entries without changing their subjects.
 
 Snapshots retain eligible target-scoped question histories in full, including
 mutation Evidence recorded while another target was active. Observations and
@@ -490,6 +550,9 @@ rea evidence-export /absolute/path/to/evidence/bundle.json /absolute/path/to/evi
 rea compare /absolute/path/to/evidence/left.json /absolute/path/to/evidence/right.json
 rea compare left.json right.json --record_pairs '[{"left_evidence_id":"ev_<left-sha256>","right_evidence_id":"ev_<right-sha256>"}]' --json
 ```
+
+Migration: replace `rea compare-bundles` with `rea compare`; the former command
+has been removed. The MCP tool remains `compare_bundles`.
 
 `--record_pairs` supplies an explicit JSON array of observation pairs, matching
 MCP `compare_bundles.record_pairs`. Pair IDs must exist on their named sides and
@@ -689,8 +752,18 @@ rea mcp --http --port 8765
 ```
 
 `--host` and `--port` default to `MCP_HOST` and `MCP_PORT` from the environment,
-then to `127.0.0.1` and an ephemeral port. The bound URL is written to stderr as
-one JSON log line (`"msg":"MCP transport listening"`) whatever `REA_LOG_LEVEL`
+then to `127.0.0.1` and an ephemeral port. A bind outside loopback requires
+`MCP_ALLOWED_HOSTS` or `--allowed-hosts`, a comma-separated list of client host
+names or IP addresses without URLs or ports. For example:
+
+```sh
+rea mcp --http --host 0.0.0.0 --allowed-hosts 127.0.0.1,rea.lan
+```
+
+Requests with a different `Host` or browser `Origin` receive `403`; a missing
+`Origin` is accepted. The announced client URL uses the bound hostname when
+admitted, otherwise the first declared hostname, with the actual bound port.
+It is written to stderr as one JSON log line (`"msg":"MCP transport listening"`) whatever `REA_LOG_LEVEL`
 is set to; nothing is written to stdout. `rea mcp --http --help` lists the accepted options. The listener serves
 one client at a time: a session ends with the client's `DELETE`, and a client
 that connects while another session is open takes it over, so a client that
@@ -728,12 +801,46 @@ rea environment-serve manifest.json --evidence capture.json --port 8765
 ```
 
 `--host` and `--port` resolve like `rea mcp --http`: flags, then `MCP_HOST` and
-`MCP_PORT`, then `127.0.0.1` and an ephemeral port. `ENVIRONMENT_NAME` renames
+`MCP_PORT`, then `127.0.0.1` and an ephemeral port. A non-loopback bind requires
+`MCP_ALLOWED_HOSTS` with the same hostname rules and Host/Origin gates as above.
+`environment-serve` uses this environment setting; `--allowed-hosts` belongs to
+`rea mcp --http`. For example:
+
+```sh
+MCP_ALLOWED_HOSTS=127.0.0.1,rea.lan rea environment-serve manifest.json --evidence capture.json --host 0.0.0.0
+```
+
+`ENVIRONMENT_NAME` renames
 the served environment; set but blank, it is refused as `configuration_invalid`
-like a blank `MCP_HOST`. The bound URL is written to stderr as one JSON log line
+like a blank `MCP_HOST`. The admitted client URL is written to stderr as one JSON log line
 (`"msg":"MCP transport listening"`). See
 [agent environments](agent-environments.md) for what the state and replay
 return and do not establish.
+
+## Build an environment bundle
+
+`rea environment-build <capture> [dir] [--name <name>] [--template-rule <rule> ...]
+[--format-rules-only] [--package-tarball <path>] [--capture-timeout-ms <ms>] [--dry-run]` builds the bundle
+`environment-export` writes from one recorded capture: a `.har` file, which it
+inspects as `inspect-web-network-capture` does, or capture Evidence JSON from
+`inspect-web-network-capture` (HAR) or `capture-browser-scenario`. It projects
+the environment manifest from the in-memory Evidence with the opt-in rules
+`after-uid-literal`, `opaque-token`, `sibling-variance` and `prefix-variance`
+unless `--template-rule` or `--format-rules-only` selects others, prepares the
+state, and writes the bundle; every file is byte-identical to the three-step
+path's when that path lists the same rules in the views' order and exports
+under the build's name. A loopback or IP-literal capture is named after its file unless `--name`
+is given. It prints one JSON report: the capture and manifest identities, the
+state, a `coverage` summary of which tools answer from the state, which replay
+and why each write is withheld with a hint, the files, warnings and the next
+command. `--dry-run` writes nothing and may omit the directory.
+
+```sh
+rea environment-build grafana.har ./grafana --json
+```
+
+See [agent environments](agent-environments.md#build-a-bundle-in-one-step)
+for the report, the hints and what the bundle ships.
 
 ## Export an environment bundle
 
@@ -855,8 +962,10 @@ redirected, which keeps large results smaller for agents and scripts; pipe
 through `jq .` for indented files. Output selection and formatting do not change
 operation status.
 
-`--format md` escapes backslashes and pipes in table headers and cells, and
-renders cell line breaks as `<br>`. These are presentation changes; retained
+`--format md` escapes backslashes, pipes, and inline Markdown syntax in table
+headers and cells so source text is displayed literally, and renders cell line
+breaks as `<br>`. Underscores between letters or digits, as in `source_index`,
+cannot form emphasis and stay unescaped. These are presentation changes; retained
 Evidence and JSON output keep the original values. Nested objects and arrays
 use JSON inside their owning Markdown cells, retaining the field names and
 values instead of replacing them with an object label. Table widths are measured
@@ -881,10 +990,10 @@ Cutter when available. This is separate from `--format json`, which selects the
 CLI result representation; the global `--json` flag selects that same CLI
 representation.
 
-Cutter still accepts deprecated `--json=true` and `--json=false` compatibility
-values. When both forms are present, `--json-output` takes precedence in either
-argument order. Bare `--json` retains its global meaning of selecting JSON CLI
-output formatting.
+Cutter no longer accepts command-local `--json=true` or `--json=false`.
+Replace these with `--json-output=true` or `--json-output=false`, respectively.
+Combine `--json-output` with bare `--json` when both Cutter command output and
+the CLI result should use JSON; either argument order is accepted.
 
 | Status    | Meaning                                                                                                                                                                                                                                                                                                                                                                                |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -910,6 +1019,10 @@ server resources. It preserves a primary listener diagnostic, or a
 tool count and Evidence identifiers. The successful `stopped` document is
 returned only after cleanup is confirmed. The same in-process server owner
 retains failed stages for retry; the CLI exposes no separate retry command.
+`rea environment-build` is one-shot too: it prints its report and exits `0`,
+or prints the refusing stage's structured error and exits `1`, writing nothing
+when the refusal comes before the bundle is written. SIGINT cancels it with a
+`cancelled` error; a cancellation before the bundle stage writes nothing.
 `rea environment-export` is one-shot: it prints the written files and exits
 `0`, or prints a structured `invalid_request` error and exits `1` for the same
 pair refusals, a non-empty or file-occupied directory, a missing package
@@ -986,3 +1099,25 @@ Counting retains the existing bounded formatted-string allocation after capacity
 admission; omit the flag to stream large JSON documents without materializing
 the complete formatted text. Exhausted token windows display an empty range at
 the total token count and have no next offset.
+
+### `inspect-devicetree`
+
+Inspect an explicit local FDT v16/v17 blob without execution or an external tool.
+Returns header, reservations, node/property tree, derived standard values and
+selected phandle references. See [devicetree inspection](devicetree.md) for
+limits and retained-view pagination.
+
+```bash
+rea inspect-devicetree /artifacts/board.dtb --json
+rea inspect-devicetree /artifacts/board.dtb --detail summary --evidence_output /artifacts/board-evidence.json --json
+```
+
+### PE TLS and load configuration
+
+```sh
+rea inspect-pe-load-config /absolute/path/to/application.exe --json
+```
+
+Reports TLS callbacks and size-covered load-config fields without execution.
+Use `--max-callbacks` and `--max-file-bytes` to set read budgets. See
+[PE TLS and load configuration](pe-load-config.md).

@@ -1,3 +1,4 @@
+import { projectCliAnalysisResult } from "./projectCliAnalysisResult.js";
 import { z } from "incur";
 import { realpath, stat } from "node:fs/promises";
 import { findAppBundleResourceRoot } from "../application/AppBundleExecutable.js";
@@ -32,6 +33,7 @@ import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import { javascriptApplicationOptions } from "../cliObservationOptions.js";
 import { AnalysisInputError } from "../domain/analysisErrorCore.js";
 import { localPathStringSchema } from "../domain/localPath.js";
+import type { ExecutableFormatHint } from "../domain/dosCom.js";
 import { absoluteCallerPath } from "../filesystem/callerPath.js";
 import { registerDecompileDirectoryCommand } from "./decompileDirectoryCommand.js";
 
@@ -165,7 +167,7 @@ const registerOverviewCommands = (
           "binary_overview",
           {},
           directAnalysisOptionsFromCli(logger, options),
-        );
+        ).then(projectCliAnalysisResult);
       });
     },
   });
@@ -182,7 +184,7 @@ const registerOverviewCommands = (
           "binary_overview",
           {},
           directAnalysisOptionsFromCli(logger, options),
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };
@@ -243,7 +245,7 @@ const registerDecompileCommand = (
             ),
           },
           directAnalysisOptionsFromCli(logger, options),
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };
@@ -253,7 +255,7 @@ const routesToJavaScriptAnalysis = async (
   path: string,
   options: {
     readonly snapshot?: string | undefined;
-    readonly "target-format"?: "dos-com" | "raw-binary" | undefined;
+    readonly "target-format"?: ExecutableFormatHint | undefined;
     readonly architecture?: string | undefined;
     readonly "entry-point"?: string | undefined;
     readonly provider?: string | undefined;
@@ -320,7 +322,7 @@ const registerXrefsCommand = (
             ),
           },
           directAnalysisOptionsFromCli(logger, options),
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };
@@ -370,7 +372,7 @@ const registerTraceCommand = (
             case_sensitive: options.caseSensitive,
           },
           directAnalysisOptionsFromCli(logger, options),
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };
@@ -474,7 +476,7 @@ const registerInstructionsCommand = (
             ),
           },
           directAnalysisOptionsFromCli(logger, options),
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };
@@ -535,7 +537,7 @@ const registerSearchCommand = (
             case_sensitive: options.caseSensitive,
           },
           directAnalysisOptionsFromCli(logger, options),
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };

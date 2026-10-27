@@ -31,10 +31,7 @@ import {
   resolveOccurrenceParents,
   type MutableOccurrence,
 } from "./ArtifactGraphConstruction.js";
-import {
-  STRICT_INTEGRITY_POLICY,
-  type ArtifactIntegrityPolicy,
-} from "./types.js";
+import type { ArtifactIntegrityPolicyName } from "../../domain/artifactIntegrityPolicy.js";
 import { abortIfNeeded, hashReadable } from "../ArtifactHash.js";
 
 export interface PendingIntegrityContradiction {
@@ -56,7 +53,7 @@ const emptyScan = (): {
 interface ScanContext {
   readonly reader: ArtifactReader;
   readonly signal: AbortSignal | undefined;
-  readonly integrity: ArtifactIntegrityPolicy;
+  readonly integrity: ArtifactIntegrityPolicyName;
   readonly asarHeaderAdmission: AsarHeaderAdmission | undefined;
   readonly nodes: Map<string, ArtifactNode>;
   readonly occurrences: MutableOccurrence[];
@@ -72,7 +69,7 @@ export const scanReader = async (
   reader: ArtifactReader | undefined,
   ownedReaders: ArtifactReader[],
   signal?: AbortSignal,
-  integrity: ArtifactIntegrityPolicy = STRICT_INTEGRITY_POLICY,
+  integrity: ArtifactIntegrityPolicyName = "fail",
   asarHeaderAdmission?: AsarHeaderAdmission,
 ): Promise<{
   readonly nodes: Map<string, ArtifactNode>;
@@ -197,7 +194,7 @@ const visitArtifactEntries = async (
         entry,
         logicalPath,
         entry.kind === "metadata" ? frame.containerId : null,
-        duplicateOrdinal,
+        { duplicateOrdinal, sourceFormat: frame.reader.format },
       );
       let digested:
         | {
@@ -231,8 +228,15 @@ const visitArtifactEntries = async (
       else {
         context.nodes.set(digested.node.artifact_id, digested.node);
         occurrence.artifact_id = digested.node.artifact_id;
-        occurrence.artifact_kind = digested.classification.kind;
-        occurrence.artifact_format = digested.classification.format;
+        const seaMainScript =
+          entry.formatMetadata?.kind === "node-sea-entry" &&
+          entry.formatMetadata.role === "main-script";
+        occurrence.artifact_kind = seaMainScript
+          ? "javascript"
+          : digested.classification.kind;
+        occurrence.artifact_format = seaMainScript
+          ? "javascript-bundle"
+          : digested.classification.format;
         occurrence.hash_status = digested.mismatched
           ? "mismatched"
           : "verified";
@@ -320,7 +324,7 @@ const digestArtifactEntry = async (
     );
   const mismatched = claim !== null && claim.digest !== observed;
   if (mismatched && claim !== null && observed !== undefined) {
-    if (context.integrity.mode === "fail")
+    if (context.integrity === "fail")
       throw new ArtifactReaderFailure(
         "integrity",
         `Artifact integrity metadata disagrees with content: ${logicalPath}`,
