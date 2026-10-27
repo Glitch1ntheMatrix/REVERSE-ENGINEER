@@ -126,6 +126,17 @@ it("keeps class definition expressions outside member receiver families", () => 
   ]);
 });
 
+it("evaluates computed object-method keys in the enclosing receiver", () => {
+  expect(
+    emitters(`function install() {
+      this.on('ready', handler);
+      return {
+        [this.emit('ready')]() { this.emit('ready'); }
+      };
+    }`),
+  ).toEqual([["on:partial", "emit:partial"], ["emit:partial"]]);
+});
+
 it("terminates cyclic class candidates with partial event links", () => {
   expect(
     emitters(`

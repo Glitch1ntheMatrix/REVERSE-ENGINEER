@@ -9,13 +9,7 @@ import { javascriptApplicationAnalysisResultSchema } from "../../../src/domain/j
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import { cliTest } from "../../support/cli/cliFixture.js";
 
-cliTest(
-  "preserves separate class sides and possible local-base event candidates through CLI and stdio MCP",
-  async ({ cli }) => {
-    const root = await createTestTempDirectory("rea-this-emitters-");
-    await writeFile(
-      join(root, "main.mjs"),
-      `
+const fixtureSource = `
       class Base {
         run() { this.on('ready', () => {}); }
         static run() { this.on('ready', () => {}); }
@@ -36,8 +30,19 @@ cliTest(
       }
       const stable = createEmitter();
       stable.on('ready', () => {}); stable.emit('ready');
-      `,
-    );
+      function install() {
+        this.on('computed', () => {});
+        return {
+          [this.emit('computed')]() { this.emit('computed'); }
+        };
+      }
+      `;
+
+cliTest(
+  "preserves receiver sides, local bases and computed-key evaluation through CLI and stdio MCP",
+  async ({ cli }) => {
+    const root = await createTestTempDirectory("rea-this-emitters-");
+    await writeFile(join(root, "main.mjs"), fixtureSource);
     const response = await cli.run({
       arguments: [
         "analyze-javascript-application",
@@ -123,6 +128,40 @@ cliTest(
       for (const event of sides) {
         expect(eventRelations(event.node_id)).toHaveLength(1);
         expect(eventRelations(event.node_id)[0]?.resolution).toBe("candidate");
+      }
+      const computed = graph.nodes.filter(
+        (n) => n.kind === "event" && n.properties.event_name === "computed",
+      );
+      expect(computed).toHaveLength(2);
+      const registration = computed.find((n) =>
+        eventRelations(n.node_id).some(
+          (r) => r.relation === "registers-listener",
+        ),
+      );
+      if (registration === undefined)
+        throw new Error("Outer receiver registration was lost");
+      expect(
+        eventRelations(registration.node_id)
+          .map((r) => r.relation)
+          .sort(),
+      ).toEqual(["dispatches-candidate", "registers-listener"]);
+      expect(
+        computed
+          .filter((n) => n !== registration)
+          .flatMap((n) => eventRelations(n.node_id))
+          .map((r) => r.relation),
+      ).toEqual(["dispatches-candidate"]);
+      for (const event of computed) {
+        expect(
+          eventRelations(event.node_id).every(
+            (r) => r.resolution === "candidate",
+          ),
+        ).toBe(true);
+        expect(
+          graph.unknowns.some(
+            (u) => u.family === "event" && u.node_id === event.node_id,
+          ),
+        ).toBe(true);
       }
       await client.ping();
     } finally {

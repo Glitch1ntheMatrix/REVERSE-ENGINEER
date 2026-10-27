@@ -60,11 +60,10 @@ const receiverBoundary = (
 ): Receiver | undefined => {
   if (parent === undefined) return undefined;
   if (t.isFunction(parent) && !t.isArrowFunctionExpression(parent)) {
-    if (t.isClassMethod(parent) || t.isClassPrivateMethod(parent))
-      return semanticComputedMethodKey(parent, child)
-        ? undefined
-        : classReceiver(parent, state);
-    return { owner: parent };
+    if (semanticComputedMethodKey(parent, child)) return undefined;
+    return t.isClassMethod(parent) || t.isClassPrivateMethod(parent)
+      ? classReceiver(parent, state)
+      : { owner: parent };
   }
   if (
     t.isStaticBlock(parent) ||
