@@ -182,6 +182,27 @@ export const UNLOADED_ANSWER_ROWS: readonly TimedCaptureRow[] = (() => {
   ];
 })();
 
+/** Task creates whose answers show the owner by id alone, which their item reads show in full. */
+export const PARTIAL_OWNER_ROWS: readonly TimedCaptureRow[] = (() => {
+  const seed = task(1, "Trim the wicks", 0);
+  const first = task(2, "Order lamp oil", 2);
+  const second = task(3, "Paint the rail", 5);
+  const answered = (entity: Entity): Entity => ({
+    ...entity,
+    owner: { id: 1 },
+  });
+  return [
+    ["GET", "/api/tasks", [seed]],
+    ["GET", "/api/tasks/1", seed],
+    ["POST", "/api/tasks", answered(first), 201, { title: "Order lamp oil" }],
+    ["GET", "/api/tasks/2", first],
+    ["GET", "/api/tasks", [seed, first]],
+    ["POST", "/api/tasks", answered(second), 201, { title: "Paint the rail" }],
+    ["GET", "/api/tasks/3", second],
+    ["GET", "/api/tasks", [seed, first, second]],
+  ];
+})();
+
 /** A tag as the application stores it: a text color it derives from the color, which no rule rebuilds. */
 const painted = (id: number, name: string, color: string, text: string) => ({
   id,
@@ -570,6 +591,42 @@ export const UNSORTED_PENDING_ROWS: readonly TimedCaptureRow[] = (() => {
     ["GET", "/api/folders", [alpha, bravo, charlie, delta]],
   ];
 })();
+
+/** A label renamed twice: a list shows the first rename in place, a list in name order the second. */
+const renamedTwice = (
+  names: readonly [string, string, string],
+  first: string,
+  second: string,
+): readonly TimedCaptureRow[] => {
+  const seeds = names.map((name, index) => label(index + 1, name));
+  const [, two, three] = seeds;
+  const renamed = { ...seeds[0]!, name: first };
+  const again = { ...seeds[0]!, name: second };
+  return [
+    ["GET", "/api/labels", seeds],
+    ["GET", "/api/labels/1", seeds[0]!],
+    ["PATCH", "/api/labels/1", renamed, 200, { name: first }],
+    ["GET", "/api/labels/1", renamed],
+    ["GET", "/api/labels", [renamed, two!, three!]],
+    ["PATCH", "/api/labels/1", again, 200, { name: second }],
+    ["GET", "/api/labels/1", again],
+    ["GET", "/api/labels", [two!, three!, again]],
+  ];
+};
+
+/** Bravo renamed Delta and listed in place, then renamed Zulu and listed last. */
+export const IN_PLACE_THEN_LAST_ROWS = renamedTwice(
+  ["Bravo", "Alpha", "Charlie"],
+  "Delta",
+  "Zulu",
+);
+
+/** Alpha renamed Zulu and listed in place, then renamed Delta and listed last. */
+export const IN_PLACE_THEN_SORTED_ROWS = renamedTwice(
+  ["Alpha", "Bravo", "Charlie"],
+  "Zulu",
+  "Delta",
+);
 
 /** A user create that sends `active: false` and is answered so, whose read shows the account active. */
 export const ACTIVE_ON_READ_ROWS: readonly TimedCaptureRow[] = (() => {

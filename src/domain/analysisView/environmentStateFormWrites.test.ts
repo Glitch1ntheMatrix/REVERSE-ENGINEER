@@ -19,6 +19,8 @@ import {
   SHELF_GUESS_ROWS,
   ID_SORTED_READ_ROWS,
   UNSORTED_PENDING_ROWS,
+  IN_PLACE_THEN_LAST_ROWS,
+  IN_PLACE_THEN_SORTED_ROWS,
   TITLE_ORDER_ROWS,
   UNLOADED_ANSWER_ROWS,
   UNSORTED_SEED_ROWS,
@@ -200,6 +202,18 @@ describe("collections kept sorted", () => {
     expect(plan.served).toBe(false);
     expect(plan.insert).toBeNull();
   });
+
+  it.each([
+    ["Delta then Zulu", IN_PLACE_THEN_LAST_ROWS],
+    ["Zulu then Delta", IN_PLACE_THEN_SORTED_ROWS],
+  ])(
+    "learns no sort that a list showing an earlier rename in place rules out (%s)",
+    (_name, rows) => {
+      const plan = planOf(rows, "patch_labels_by_id");
+      expect(plan.served).toBe(false);
+      expect(plan.insert).toBeNull();
+    },
+  );
 
   it("learns the sort from a rename after a read its query sorts by id showed an earlier rename", () => {
     expect(planOf(ID_SORTED_READ_ROWS, "put_books_by_id")).toMatchObject({

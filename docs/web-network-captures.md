@@ -770,7 +770,8 @@ only adds fields the answer lacks and still checks it. Serving answers a create
 in its answer's shape and clock precision, with empty lists and maps the call
 did not send spelled (`null`, `[]` or `{}`) as its answer spelled them and the
 values it had not loaded as it answered them (unless the call sent one the plan
-stores as sent), and stores the fields of both,
+stores as sent), leaving out members the read added inside an object the answer
+showed, and stores the fields of both,
 as the item read-back shows them, with its clock precision. Updates
 answer empty lists and maps they did not send as their answers spelled them
 too; a member a call sent is answered as sent. An update or delete that answers
@@ -909,8 +910,9 @@ a list in the collection's own order showed its entity moves it in turn by such 
 field, against the others' values before their own writes, when
 the entities no write has changed since a list in the collection's own order last
 showed them already follow it, as serving moves only the entities a write
-changes, and unless
-a create was placed by a sort that excludes it or a read listing the whole
+changes, and unless an earlier read listing the whole collection in its own
+order showed a write that changed such a field where moving it by that order
+would not have put it, a create was placed by a sort that excludes it, or a read listing the whole
 collection in its own order, not one its query sorts, that placed a create did
 not follow it; on a match, the type's creates
 and updates take that order, as Grafana keeps folders by title though no earlier
