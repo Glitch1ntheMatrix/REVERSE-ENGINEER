@@ -188,28 +188,6 @@ export class BinarySession
     return () => this.#availabilityListeners.delete(listener);
   }
 
-  /** Resolve a path with session-owned resources without opening a provider. */
-  previewPath(
-    path: string,
-    options: BinarySessionOpenOptions = {},
-  ): Promise<Result<ResolvedSessionOpen, AnalysisError>> {
-    if (isAborted(options.signal))
-      return Promise.resolve(err(new AnalysisCancelledError("open_binary")));
-    return resolveSessionOpen({
-      resources: this.fileResources,
-      router: this.#providerRouter,
-      current: this.#active,
-      path,
-      options,
-      stagedSnapshotMatches: (target, profile) =>
-        this.matchesSnapshot(target, profile),
-    }).then((resolved) =>
-      resolved.ok && isAborted(options.signal)
-        ? err(new AnalysisCancelledError("open_binary"))
-        : resolved,
-    );
-  }
-
   /** Resolve a target and provider profile without creating a provider client. */
   previewTarget(
     target: BinaryTarget,
@@ -246,7 +224,6 @@ export class BinarySession
     return this.#open(
       (admitted) =>
         resolveSessionOpen({
-          resources: this.fileResources,
           router: this.#providerRouter,
           current: this.#active,
           path,

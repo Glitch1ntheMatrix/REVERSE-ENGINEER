@@ -866,7 +866,7 @@ export class GhidraClient {
           this.#options.debugCompanion,
           this.#runtimeRoot.path,
           this.#snapshotPath,
-          { signal: deadline.signal, fileOwners: this.#snapshotOwners },
+          { signal: deadline.signal },
         );
         this.#targetAdmission =
           this.#targetAdmission === undefined
@@ -880,9 +880,7 @@ export class GhidraClient {
         const failure = this.#failure(
           "start",
           "Ghidra debug companion staging failed",
-          cause instanceof GhidraFileCopyCleanupFailure
-            ? cause.primaryCause
-            : cause,
+          cause,
         );
         return this.#startupFailure(failure);
       }
