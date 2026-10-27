@@ -78,8 +78,10 @@ preserving your REA client entry. See the
 
 `rea setup --client vscode` configures the default VS Code user profile's
 `mcp.json`. Setup honors `VSCODE_PORTABLE` and `VSCODE_APPDATA` when they are
-present in its environment. It cannot infer a running window's named profile
-or `--user-data-dir`; configure that profile separately when needed.
+present in its environment; a relative value resolves against `VSCODE_CWD` when
+that variable is set, otherwise against the command's working directory. It
+cannot infer a running window's named profile or `--user-data-dir`; configure
+that profile separately when needed.
 
 `rea setup --client copilot_cli` instead configures Copilot's user
 `mcp-config.json`. VS Code can forward eligible profile servers to Copilot
