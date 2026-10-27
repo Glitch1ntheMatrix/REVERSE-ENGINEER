@@ -394,6 +394,49 @@ void test("an opaque cleanup-shaped abort reason during a file read never transf
   }
 });
 
+void test("target digests reject append and same-size writes during the descriptor read", async (context) => {
+  const selected = join(folder, "changing-target");
+  for (const mutation of ["append", "overwrite"]) {
+    await writeFile(selected, fixture);
+    const originalOpen = fs.open;
+    let changed = false;
+    const intercepted = context.mock.method(fs, "open", async (...args) => {
+      const handle = await originalOpen(...args);
+      const read = handle.read.bind(handle);
+      handle.read = async (...readArgs) => {
+        const result = await read(...readArgs);
+        if (!changed) {
+          changed = true;
+          if (mutation === "append") await fs.appendFile(selected, "new bytes");
+          else await writeFile(selected, Buffer.alloc(fixture.length));
+        }
+        return result;
+      };
+      return handle;
+    });
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(digestTarget(selected), (cause) => {
+        assert.equal(cause._tag, "AnalysisArtifactChangedError");
+        assert.equal(cause.path, selected);
+        assert.equal(projectAnalysisError(cause).code, "artifact_changed");
+        return true;
+      });
+      assert.equal(changed, true);
+      assert.equal(await retryNativeByteCleanup(), 0);
+    } finally {
+      intercepted.mock.restore();
+      syncBuiltinESMExports();
+    }
+    assert.equal(
+      await digestTarget(selected),
+      createHash("sha256")
+        .update(await fs.readFile(selected))
+        .digest("hex"),
+    );
+  }
+});
+
 void test("the capture-derived length bound and uint64 extent reject before reading", async () => {
   assert.equal(MAX_NATIVE_READ_BYTES, 1024 * 1024);
   assert.equal(

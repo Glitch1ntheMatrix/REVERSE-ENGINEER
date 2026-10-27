@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
+  AnalysisArtifactChangedError,
   AnalysisCancelledError,
   AnalysisInputError,
   AnalysisOutputError,
@@ -258,9 +259,18 @@ async function withRegularFile(path, signal, operation) {
 }
 
 export const digestTarget = (path, signal) =>
-  withRegularFile(path, signal, (handle, metadata) =>
-    hashHandle(handle, metadata.size, signal),
-  );
+  withRegularFile(path, signal, async (handle, before) => {
+    const digest = await hashHandle(handle, before.size, signal);
+    const after = await handle.stat({ bigint: true });
+    assertRegularFileActive(signal);
+    if (!stableMetadata(before, after))
+      throw new AnalysisArtifactChangedError(
+        OPERATION,
+        path,
+        "Target metadata changed during digest verification",
+      );
+    return digest;
+  });
 
 /** Retry cleanup without forgetting any file handle whose close still fails. */
 export async function retryNativeByteCleanup() {
