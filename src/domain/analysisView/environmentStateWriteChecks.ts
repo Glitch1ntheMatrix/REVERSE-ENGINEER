@@ -47,6 +47,12 @@ interface RemovedTarget {
 }
 
 /** The gate's copy of the state: entities in collection order and documents, changed by modelled writes. */
+/** A write since a list in collection order last showed its entity, with the values it replaced (`null` for a create). */
+export interface PendingWrite {
+  readonly target: string;
+  readonly before: JsonObject | null;
+}
+
 export class SimulatedState {
   readonly #entities = new Map<string, StateEntity>();
   readonly #collections = new Map<string, string[]>();
@@ -57,6 +63,8 @@ export class SimulatedState {
   readonly #named = new Map<string, Set<string>>();
   /** The order a type's collections keep their entities in, as its creates insert them. */
   #sortOf: (type: string) => InsertRule | undefined = () => undefined;
+  /** The values each entity put since `track` replaced, `null` for one a put added. */
+  readonly #prior = new Map<string, JsonObject | null>();
 
   constructor(
     entities: readonly StateEntity[],
@@ -112,6 +120,7 @@ export class SimulatedState {
   put(entity: StateEntity, index?: number): void {
     const key = entityTarget(entity.type, entity.collection, entity.id);
     const held = this.#entities.get(key);
+    if (!this.#prior.has(key)) this.#prior.set(key, held?.fields ?? null);
     this.#entities.set(key, entity);
     if (held !== undefined) {
       this.#resort(held, entity);
@@ -130,22 +139,67 @@ export class SimulatedState {
     this.#served.remember(entity.type, entity.collection);
   }
 
-  /** Put a collection's entities in the order an insert rule would have placed them, returning the order they had. */
-  arrange(type: string, collection: string, rule: InsertRule): string[] {
-    const target = collectionTarget(type, collection);
-    const before = this.#collections.get(target) ?? [];
-    const keys: string[] = [];
-    for (const key of before)
-      keys.splice(
-        insertIndex(
-          rule,
-          keys.map((member) => this.#entities.get(member)!.fields),
-          this.#entities.get(key)!.fields,
-        ),
-        0,
+  /** Start recording the values the next puts replace. */
+  track(): void {
+    this.#prior.clear();
+  }
+
+  /** The values an entity held before its first put since `track`: `null` when that put added it, undefined when none did. */
+  priorFields(key: string): JsonObject | null | undefined {
+    return this.#prior.get(key);
+  }
+
+  /**
+   * Put a collection's entities in the order serving gives when each of `writes` moves its entity in turn by `rule`,
+   * against the others' values before their own writes, or a create inserts it; returns the order they had.
+   */
+  replay(
+    type: string,
+    collection: string,
+    rule: Extract<InsertRule, { rule: "sorted" }>,
+    writes: readonly PendingWrite[],
+  ): string[] {
+    const before =
+      this.#collections.get(collectionTarget(type, collection)) ?? [];
+    const held = new Set(before);
+    const ours = writes.filter((write) => held.has(write.target));
+    const first = new Map<string, JsonObject | null>();
+    for (const write of ours)
+      if (!first.has(write.target)) first.set(write.target, write.before);
+    const order = before
+      .filter((key) => first.get(key) !== null)
+      .map((key) => ({
         key,
+        fields: first.get(key) ?? this.#entities.get(key)!.fields,
+      }));
+    for (const [index, { target: key, before: prior }] of ours.entries()) {
+      const fields =
+        ours.slice(index + 1).find((later) => later.target === key)?.before ??
+        this.#entities.get(key)!.fields;
+      const at = order.findIndex((member) => member.key === key);
+      if ((prior === null) !== at < 0) continue;
+      if (at >= 0) order.splice(at, 1);
+      const moved =
+        prior === null ||
+        !same(ownMember(prior, rule.field), ownMember(fields, rule.field));
+      order.splice(
+        moved
+          ? insertIndex(
+              rule,
+              order.map((member) => member.fields),
+              fields,
+            )
+          : at,
+        0,
+        { key, fields },
       );
-    this.restore(type, collection, keys);
+    }
+    if (order.length === before.length)
+      this.restore(
+        type,
+        collection,
+        order.map((member) => member.key),
+      );
     return before;
   }
 

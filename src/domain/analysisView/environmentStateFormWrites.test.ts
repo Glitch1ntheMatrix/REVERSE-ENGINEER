@@ -18,6 +18,7 @@ import {
   SHELF_TIE_ROWS,
   SHELF_GUESS_ROWS,
   ID_SORTED_READ_ROWS,
+  UNSORTED_PENDING_ROWS,
   TITLE_ORDER_ROWS,
   UNLOADED_ANSWER_ROWS,
   UNSORTED_SEED_ROWS,
@@ -192,6 +193,12 @@ describe("collections kept sorted", () => {
 
   it("withholds a rename whose read only an unplaced create's guessed order explains", () => {
     expect(planOf(SHELF_GUESS_ROWS, "put_books_by_id").served).toBe(false);
+  });
+
+  it("learns no sort from renames whose moves, made in turn as serving makes them, do not reach the list", () => {
+    const plan = planOf(UNSORTED_PENDING_ROWS, "put_folders_by_id");
+    expect(plan.served).toBe(false);
+    expect(plan.insert).toBeNull();
   });
 
   it("learns the sort from a rename after a read its query sorts by id showed an earlier rename", () => {
