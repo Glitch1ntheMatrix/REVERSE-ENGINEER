@@ -429,6 +429,7 @@ it.runIf(hasNativeBound)(
     expect(result.dns_queries).toEqual([
       {
         query: "api.example.com",
+        query_labels_hex: ["617069", "6578616d706c65", "636f6d"],
         response_addresses: ["93.184.216.34"],
         response_address_count: 1,
       },
