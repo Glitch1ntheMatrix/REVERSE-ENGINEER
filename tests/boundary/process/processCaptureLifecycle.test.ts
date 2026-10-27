@@ -20,6 +20,7 @@ import {
   type FinalizationHost,
 } from "../../../src/process/capture/ProcessHarness.js";
 import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
+import { cleanupOwnedProcessGroup } from "../../../src/process/ProcessOwnership.js";
 import { snapshotRoots } from "../../../src/process/capture/FilesystemSnapshot.js";
 import { ProcessCaptureError } from "../../../src/process/capture/ProcessCaptureError.js";
 import { expectUnverifiedHostCleanup } from "../../support/hostCleanup.js";
@@ -352,6 +353,18 @@ itWithCaptureCapability(
 itWithCaptureCapability(
   "retains collected observations when completion and cleanup both fail",
   async () => {
+    const resources = new ProcessCaptureResourceScope();
+    let temporaryRoot: string | undefined;
+    let denyCleanup = true;
+    const release = resources.release.bind(resources);
+    vi.spyOn(resources, "release").mockImplementation((options) => {
+      temporaryRoot = options.temporaryRoot;
+      return release(options);
+    });
+    onTestFinished(async () => {
+      denyCleanup = false;
+      await resources.close();
+    });
     let snapshotCalls = 0;
     const captureSnapshot: typeof snapshotRoots = async () => {
       snapshotCalls += 1;
@@ -366,10 +379,10 @@ itWithCaptureCapability(
     };
     const cleanupHost: ProcessCaptureCleanupHost = {
       platform: process.platform,
-      cleanupProcessGroup: async () => ({
-        cleaned: false,
-        reason: "fixture cleanup could not be verified",
-      }),
+      cleanupProcessGroup: async (ownership) =>
+        denyCleanup
+          ? { cleaned: false, reason: "fixture cleanup could not be verified" }
+          : cleanupOwnedProcessGroup(ownership),
       removeTemporaryRoot: async (path) =>
         rm(path, { recursive: true, force: true }),
     };
@@ -387,6 +400,8 @@ itWithCaptureCapability(
       process.env,
       captureSnapshot,
       cleanupHost,
+      undefined,
+      resources,
     );
 
     if (result.ok) throw new Error("expected cleanup-incomplete failure");
@@ -396,12 +411,15 @@ itWithCaptureCapability(
     expect(result.error.executionFailure).toBe(
       "fixture final snapshot failure",
     );
+    if (temporaryRoot === undefined)
+      throw new Error("Expected the capture's owned temporary root");
+    await access(temporaryRoot);
     const projected = projectAnalysisError(result.error);
     expect(projected).toMatchObject({
       code: "cleanup_incomplete",
       details: {
         cleanup: "incomplete",
-        resources: ["owned_process_group", "temporary_root"],
+        resources: ["owned_process_group", temporaryRoot],
       },
     });
     expect(projected).not.toHaveProperty("stack");
@@ -453,6 +471,21 @@ itWithCaptureCapability(
     ).toBe(true);
     expect(observations.manifest.state).toBe("unavailable");
     expect(snapshotCalls).toBe(2);
+
+    denyCleanup = false;
+    await resources.close();
+    await expect(access(temporaryRoot)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(result.error.cleanupIncomplete).toBe(false);
+    expect(result.error.cleanupResources).toEqual([]);
+    expect(projectAnalysisError(result.error).code).not.toBe(
+      "cleanup_incomplete",
+    );
+    expect(result.error.partialObservation).toBe(partial);
+    expect(result.error.executionFailure).toBe(
+      "fixture final snapshot failure",
+    );
   },
   10_000,
 );

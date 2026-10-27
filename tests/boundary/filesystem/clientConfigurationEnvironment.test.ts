@@ -211,7 +211,7 @@ it.skipIf(process.platform !== "win32")(
       JSON.stringify({
         mcpServers: {
           rea: {
-            command: "old-rea",
+            command: "rea",
             args: ["mcp"],
             env: { rea_mcp_input_schema_profile: "full" },
           },
@@ -378,7 +378,11 @@ it.each([
       {
         ["__proto__"]: { caller: "retain root value" },
         [serversKey]: {
-          rea: clientRegistrationEntry(format, ["rea-old", "mcp"], custom),
+          rea: clientRegistrationEntry(
+            format,
+            ["npx", "-y", "rea-agents@6.6.0", "mcp"],
+            custom,
+          ),
           other: clientRegistrationEntry(format, ["other"], { OTHER: "keep" }),
           ["__proto__"]: clientRegistrationEntry(format, ["peer"], {}),
         },
@@ -651,7 +655,7 @@ it("rejects a non-string caller environment key before editing configuration", a
   const root = await createTestTempDirectory("rea-invalid-own-environment-");
   const configPath = join(root, "config.json");
   const source =
-    '{"mcpServers":{"rea":{"command":"old-rea","args":["mcp"],"env":{"__proto__":123}}}}';
+    '{"mcpServers":{"rea":{"command":"rea","args":["mcp"],"env":{"__proto__":123}}}}';
   await writeFile(configPath, source);
   const details = clientRegistrationEnvironmentDetails(
     parseClientConfiguration(source, "json"),
@@ -712,7 +716,7 @@ it("retains legacy OpenCode environment when migrating into a native server tabl
     configPath,
     JSON.stringify({
       mcp: {
-        rea: clientRegistrationEntry("opencode", ["old", "mcp"], custom),
+        rea: clientRegistrationEntry("opencode", ["rea", "mcp"], custom),
         servers: {
           other: clientRegistrationEntry("opencode_v2", ["other"], {}),
         },

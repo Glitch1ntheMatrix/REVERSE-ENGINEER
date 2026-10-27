@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { inspectWindowsNativeReadiness } from "../process/WindowsAuthority.js";
+import { windowsNativeArtifactBytes } from "../domain/windowsNativeArtifact.fixture.js";
 import {
   loadWindowsNativeAuthority,
   type WindowsNativeLoadHost,
@@ -15,12 +16,7 @@ const fixture = (
     privateBridgeDescriptorAccess?: unknown;
   } = {},
 ) => {
-  const bytes = Buffer.alloc(128);
-  bytes.write("MZ");
-  bytes.writeUInt32LE(64, 0x3c);
-  bytes.write("PE\0\0", 64, "ascii");
-  bytes.writeUInt16LE(0x8664, 68);
-  bytes.writeUInt16LE(0x20b, 88);
+  const bytes = windowsNativeArtifactBytes();
   const manifest = {
     packageVersion: "1.0.0",
     platform: "win32",

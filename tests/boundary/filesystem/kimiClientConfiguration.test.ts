@@ -94,7 +94,7 @@ describe("Kimi Code registration lifecycle", () => {
       client.configPath,
       JSON.stringify({
         mcpServers: {
-          rea: { command: "old-rea", args: ["mcp"], enabledTools },
+          rea: { command: "rea", args: ["mcp"], enabledTools },
         },
       }),
     );
@@ -117,7 +117,7 @@ describe("Kimi Code registration lifecycle", () => {
     const original = JSON.stringify({
       mcpServers: {
         rea: {
-          ...expectedRegistration(["old-rea", "mcp"]),
+          ...expectedRegistration(["rea", "mcp"]),
           startupTimeoutMs: 90_000,
           toolTimeoutMs: 300_000,
         },
@@ -243,7 +243,7 @@ describe("Kimi Code input-schema profile selection", () => {
       JSON.stringify({
         mcpServers: {
           rea: {
-            command: "old-rea",
+            command: "rea",
             args: ["mcp"],
             env: { REA_MCP_INPUT_SCHEMA_PROFILE: "full" },
           },
@@ -297,7 +297,7 @@ describe("Kimi Code input-schema profile selection", () => {
         JSON.stringify({
           mcpServers: {
             rea: {
-              command: "old-rea",
+              command: "rea",
               args: ["mcp"],
               env: { REA_MCP_INPUT_SCHEMA_PROFILE: storedProfile },
             },

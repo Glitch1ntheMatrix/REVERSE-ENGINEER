@@ -342,7 +342,7 @@ describe("TOML client configuration comparison", () => {
     const value = "-inf";
     const root = await createTestTempDirectory("rea-client-toml-");
     const configPath = join(root, "config.toml");
-    const original = `unrelated = ${value}\n[mcp_servers.rea]\ncommand = "old"\nstartup_timeout_sec = ${value}\n`;
+    const original = `unrelated = ${value}\n[mcp_servers.rea]\ncommand = "rea"\nargs = ["mcp"]\nstartup_timeout_sec = ${value}\n`;
     await writeFile(configPath, original);
     const client = { name: "codex", format: "toml", configPath } as const;
     expect(
@@ -397,17 +397,17 @@ describe("Codex configuration text preservation", () => {
     },
     {
       name: "quoted tables and nested environment",
-      original: `${unrelatedToml}[mcp_servers."rea"]\ncommand = "old"\n[mcp_servers.rea.env]\nOLD = "value"\n${unrelatedServer}`,
+      original: `${unrelatedToml}[mcp_servers."rea"]\ncommand = "rea"\nargs = ["mcp"]\n[mcp_servers.rea.env]\nOLD = "value"\n${unrelatedServer}`,
       preserved: [unrelatedToml, unrelatedServer],
     },
     {
       name: "dotted registration keys",
-      original: `${unrelatedToml}mcp_servers.rea.command = "old"\n${unrelatedServer}`,
+      original: `${unrelatedToml}mcp_servers.rea.command = "rea"\nmcp_servers.rea.args = ["mcp"]\n${unrelatedServer}`,
       preserved: [unrelatedToml, unrelatedServer],
     },
     {
       name: "inline server table",
-      original: `${unrelatedToml}mcp_servers = { rea = { command = "old" }, other = { command = 'other' } } # Shared table.\n`,
+      original: `${unrelatedToml}mcp_servers = { rea = { command = "rea", args = ["mcp"] }, other = { command = 'other' } } # Shared table.\n`,
       preserved: [
         unrelatedToml,
         "other = { command = 'other' }",

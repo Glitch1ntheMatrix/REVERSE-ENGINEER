@@ -16,7 +16,7 @@ const configuration = (
     "# Personal settings\nmodel: custom\nmask: 0x1F\n" +
     "server_defaults: &servers\n" +
     (existing
-      ? "  rea: &server\n    command: rea-old\n    args: [ 'mcp' ]\n    env:\n      FLAG: 'on'\n  other: *server\n"
+      ? "  rea: &server\n    command: rea\n    args: [ 'mcp' ]\n    env:\n      FLAG: 'on'\n  other: *server\n"
       : "  other: &server\n    command: other-server\n    args: [ 'on', '0600' ]\n");
   return {
     defaults,

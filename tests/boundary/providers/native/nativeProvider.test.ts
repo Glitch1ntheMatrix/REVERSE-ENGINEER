@@ -6,7 +6,14 @@ import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+} from "vitest";
 import { build } from "plist";
 
 import { createTestTempDirectory } from "../../../fixtures/temporaryDirectory.js";
@@ -1449,12 +1456,16 @@ describe("native plist defaults for iOS-style bundles", () => {
       new FixtureRunner(),
       "darwin",
     ).createClient({
-      ...machoTarget(executable, app),
+      ...(await nativeMachoTargetForFile(executable, app)),
       bundleInfoPlist: join(app, "Info.plist"),
+    });
+    onTestFinished(async () => {
+      expect((await client.close()).ok).toBe(true);
     });
 
     const plist = await client.execute("inspect_plist", {});
-    expect(plist.ok && plist.value.result).toMatchObject({
+    if (!plist.ok) throw plist.error;
+    expect(plist.value.result).toMatchObject({
       source_path: join(app, "Info.plist"),
     });
   });
