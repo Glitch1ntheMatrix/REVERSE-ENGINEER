@@ -5,8 +5,10 @@ import {
   isScalar,
   isSeq,
   parseDocument,
+  visit,
   Document,
 } from "yaml";
+import type { Node } from "yaml";
 
 /**
  * ggcode reads MCP servers from ~/.ggcode/mcp_servers.yaml, a top-level YAML
@@ -141,17 +143,84 @@ export const parseGgcodeConfigurationYaml = (
  * standalone table without dropping it, so migration refuses such a file.
  */
 export const ggcodeConfigurationHasUnnamedServers = (text: string): boolean => {
-  const hasUnnamed = (node: unknown): boolean =>
+  // Resolve `name: *anchor` through the same boundary the editors use: an
+  // aliased name still addresses its server, so it is not an unnamed entry.
+  const hasUnnamed = (node: unknown, document: Document): boolean =>
     isSeq(node) &&
-    node.items.some(
-      (item) =>
-        isMap(item) &&
-        (typeof item.get("name") !== "string" || item.get("name") === ""),
-    );
-  const root = parseGgcodeDocument(text).contents;
-  if (isSeq(root)) return hasUnnamed(root);
-  if (isMap(root)) return hasUnnamed(root.get("mcp_servers", true));
+    node.items.some((item) => {
+      if (!isMap(item)) return false;
+      const name = entryName(item, document);
+      return typeof name !== "string" || name === "";
+    });
+  const document = parseGgcodeDocument(text);
+  const root = document.contents;
+  if (isSeq(root)) return hasUnnamed(root, document);
+  if (isMap(root)) return hasUnnamed(root.get("mcp_servers", true), document);
   return false;
+};
+
+/** Copy original bindings so replaced aliases cannot bind to later anchors. */
+const copyGgcodeAliasSource = (
+  source: unknown,
+  document: Document,
+  visiting = new Set<Node>(),
+): unknown => {
+  const node = isAlias(source) ? source.resolve(document) : source;
+  if (isAlias(source) && node === undefined)
+    throw new TypeError("Cannot edit an unresolved ggcode YAML alias");
+  if (!isNode(node)) return node;
+  if (visiting.has(node))
+    throw new TypeError("Cannot edit cyclic ggcode YAML aliases");
+  visiting.add(node);
+  const copied = node.clone();
+  if (isScalar(copied) || isMap(copied) || isSeq(copied)) delete copied.anchor;
+  if (isSeq(node) && isSeq(copied))
+    copied.items = node.items.map((item) =>
+      copyGgcodeAliasSource(item, document, visiting),
+    );
+  else if (isMap(node) && isMap(copied))
+    copied.items.forEach((pair, index) => {
+      const original = node.items[index];
+      if (original === undefined) return;
+      pair.key = copyGgcodeAliasSource(original.key, document, visiting);
+      pair.value = copyGgcodeAliasSource(original.value, document, visiting);
+    });
+  if (isAlias(source)) {
+    delete copied.commentBefore;
+    delete copied.comment;
+    if (source.commentBefore !== undefined)
+      copied.commentBefore = source.commentBefore;
+    if (source.comment !== undefined) copied.comment = source.comment;
+  }
+  visiting.delete(node);
+  return copied;
+};
+
+/** Outside aliases keep their original bindings when the rea entry changes. */
+const retainGgcodeAliasConsumers = (
+  document: Document,
+  previous: unknown,
+): void => {
+  if (!isNode(previous)) return;
+  const replaced = new Set<Node>();
+  visit(previous, {
+    Node: (_key, node) => {
+      replaced.add(node);
+    },
+  });
+  visit(document, {
+    Alias: (_key, alias, path) => {
+      const source = alias.resolve(document);
+      if (
+        source === undefined ||
+        !replaced.has(source) ||
+        path.some((parent) => isNode(parent) && replaced.has(parent))
+      )
+        return;
+      const copied = copyGgcodeAliasSource(alias, document);
+      return isNode(copied) ? copied : undefined;
+    },
+  });
 };
 
 /**
@@ -188,7 +257,10 @@ export const editGgcodeConfigurationYaml = (
       const index = section.items.findIndex(
         (item) => entryName(item, document) === serverKey,
       );
-      if (index >= 0) section.items.splice(index, 1);
+      if (index >= 0) {
+        retainGgcodeAliasConsumers(document, section.items[index]);
+        section.items.splice(index, 1);
+      }
     } else if (isMap(section)) {
       section.delete(serverKey);
     }
@@ -202,7 +274,10 @@ export const editGgcodeConfigurationYaml = (
     (item) => entryName(item, document) === serverKey,
   );
   if (entry === undefined) {
-    if (index >= 0) root.items.splice(index, 1);
+    if (index >= 0) {
+      retainGgcodeAliasConsumers(document, root.items[index]);
+      root.items.splice(index, 1);
+    }
   } else {
     const node = document.createNode({
       name: serverKey,
@@ -212,6 +287,7 @@ export const editGgcodeConfigurationYaml = (
       root.items.push(node);
     } else {
       const previous = root.items[index];
+      retainGgcodeAliasConsumers(document, previous);
       if (isNode(previous)) {
         const commentBefore = previous.commentBefore ?? node.commentBefore;
         if (commentBefore !== undefined) node.commentBefore = commentBefore;

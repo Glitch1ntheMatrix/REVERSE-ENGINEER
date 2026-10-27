@@ -233,8 +233,15 @@ const configureClientDocument = async (
     original !== undefined,
   );
   if (!superseded.ok) {
-    throwCleanupFailure(superseded.error);
-    return { status: "failed", reason: "readback" };
+    if (superseded.error.kind !== "registration_ownership")
+      throwCleanupFailure(superseded.error);
+    return superseded.error.kind === "registration_ownership"
+      ? {
+          status: "failed",
+          reason: "registration_ownership",
+          detail: superseded.error.detail,
+        }
+      : { status: "failed", reason: "readback" };
   }
   const desired = await clientConfigurationDesired(
     client,
@@ -619,7 +626,8 @@ const inspectClientDocument = async (
       }
       const superseded = await readSupersededServers(client, false);
       if (!superseded.ok) {
-        throwCleanupFailure(superseded.error);
+        if (superseded.error.kind !== "registration_ownership")
+          throwCleanupFailure(superseded.error);
         return { status: "invalid", remediation: superseded.error.detail };
       }
       return { status: "create" };
@@ -714,7 +722,15 @@ const readSupersededServers = async (
   client: SetupClient,
   targetExists: boolean,
 ): Promise<
-  Result<Readonly<Record<string, unknown>>, ClientConfigurationFileError>
+  Result<
+    Readonly<Record<string, unknown>>,
+    | ClientConfigurationFileError
+    | {
+        readonly kind: "registration_ownership";
+        readonly path: string;
+        readonly detail: string;
+      }
+  >
 > => {
   const path = client.supersededConfigPath;
   if (path === undefined || targetExists) return ok({});
@@ -732,7 +748,21 @@ const readSupersededServers = async (
           path,
           detail: `Configuration ${path} holds MCP server entries without a \`name\`; ggcode loads them, but setup cannot migrate unnamed entries into mcp_servers.yaml without dropping them. Name or remove those entries, then rerun setup.`,
         });
-      return ok(parseGgcodeLegacyConfiguration(text.value).servers);
+      const legacy = parseGgcodeLegacyConfiguration(text.value);
+      // The legacy row this migration would carry into the fresh file must be
+      // REA's own, or seeding would silently replace another tool's launcher.
+      const ownershipBlocker = registrationOwnershipBlocker(
+        { ...client, configPath: path },
+        legacy,
+        text.value,
+      );
+      if (ownershipBlocker !== undefined)
+        return err({
+          kind: "registration_ownership",
+          path,
+          detail: ownershipBlocker,
+        });
+      return ok(legacy.servers);
     } catch (cause: unknown) {
       return err({
         kind: "malformed",

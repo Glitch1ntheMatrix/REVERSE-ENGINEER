@@ -182,6 +182,53 @@ describe("ggcode YAML registration", () => {
     ]);
   });
 
+});
+
+describe("ggcode YAML alias and empty-file handling", () => {
+  const ggcodeClient = async () => {
+    const home = await createTestTempDirectory("rea-ggcode-");
+    const client = ggcodePath(home, process.platform);
+    if (client?.markerPath === undefined)
+      throw new Error("missing ggcode client");
+    await mkdir(client.markerPath, { recursive: true });
+    return { home, client };
+  };
+
+  const readServers = async (path: string) =>
+    parse(await readFile(path, "utf8"));
+
+  it("inlines aliases that pointed into the replaced rea entry", async () => {
+    const { client } = await ggcodeClient();
+    await writeFile(
+      client.configPath,
+      `- name: rea
+  command: rea
+  args: ["mcp"]
+  env: &shared
+    MODE: debug
+- name: peer
+  command: peer-cmd
+  env: *shared
+`,
+    );
+
+    expect(
+      (await configureClientConfiguration(client, {}, command)).status,
+    ).toBe("configured");
+    const text = await readFile(client.configPath, "utf8");
+    expect(text).not.toContain("*shared");
+    expect(parse(text)).toEqual([
+      {
+        name: "rea",
+        type: "stdio",
+        command: command[0],
+        args: command.slice(1),
+        env: { MODE: "debug" },
+      },
+      { name: "peer", command: "peer-cmd", env: { MODE: "debug" } },
+    ]);
+  });
+
   it("registers into an empty config file", async () => {
     const { client } = await ggcodeClient();
     await writeFile(client.configPath, "");
@@ -267,6 +314,51 @@ mcp_servers:
     ]);
   });
 
+  it("seeds an aliased in-main rea name instead of refusing it", async () => {
+    const { home, client } = await ggcodeClient();
+    await writeFile(
+      join(home, ".ggcode", "ggcode.yaml"),
+      `model: &reaName rea
+mcp_servers:
+  - name: *reaName
+    command: rea
+    args: ["mcp"]
+  - name: peer
+    command: peer-cmd
+`,
+    );
+
+    expect(
+      (await configureClientConfiguration(client, {}, command)).status,
+    ).toBe("configured");
+    expect(
+      (await readServers(client.configPath)).map(
+        ({ name }: { name: string }) => name,
+      ),
+    ).toEqual(["rea", "peer"]);
+  });
+
+  it("refuses to seed an unowned in-main rea registration", async () => {
+    const { home, client } = await ggcodeClient();
+    await writeFile(
+      join(home, ".ggcode", "ggcode.yaml"),
+      `mcp_servers:
+  - name: rea
+    command: other-tool
+    args: ["serve"]
+`,
+    );
+
+    const result = await configureClientConfiguration(client, {}, command);
+    expect(result).toMatchObject({
+      status: "failed",
+      reason: "registration_ownership",
+    });
+    await expect(readFile(client.configPath, "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
   it("reports an aligned legacy in-main registration while no standalone file exists", async () => {
     const { home } = await ggcodeClient();
     await writeFile(
@@ -336,7 +428,8 @@ describe("ggcode legacy fallback semantics", () => {
       `mcp_servers:
   - name: rea
     type: stdio
-    command: old-rea
+    command: rea
+    args: ["mcp"]
     env:
       REA_LOG_LEVEL: debug
   - name: legacy
@@ -442,6 +535,21 @@ mcp_servers:
       { name: "other", command: "other-cmd" },
     ]);
   });
+
+});
+
+describe("ggcode standalone parsing guards", () => {
+  const ggcodeClient = async () => {
+    const home = await createTestTempDirectory("rea-ggcode-");
+    const client = ggcodePath(home, process.platform);
+    if (client?.markerPath === undefined)
+      throw new Error("missing ggcode client");
+    await mkdir(client.markerPath, { recursive: true });
+    return { home, client };
+  };
+
+  const readServers = async (path: string) =>
+    parse(await readFile(path, "utf8"));
 
   it("treats an explicit empty type as stdio", async () => {
     const { home, client } = await ggcodeClient();
