@@ -28,6 +28,7 @@ import {
 } from "../../domain/apple/machoPlatform.js";
 import {
   classifyFatContainerIdentity,
+  findOverlappingFatSlices,
   hasMachoMagic,
   readFatContainerHeader,
   readFatHeaderPrefix,
@@ -210,6 +211,16 @@ export const readMachoContainer = async (
         status: "unsupported",
         reason: JVM_CLASS_IDENTITY_LIMIT_REASON,
       };
+    // Aliased declarations are rejected at the declaration owner before any
+    // slice payload is parsed. A declaration whose own range is already
+    // defective keeps that fault; it does not turn its neighbours into aliases.
+    const overlap = findOverlappingFatSlices(rangeValidSlices(header));
+    if (overlap !== null)
+      return {
+        kind: "issue",
+        status: "malformed",
+        reason: overlapReason(overlap),
+      };
     // Identity is only malformed through a slice range issue, which the
     // returned rangeIssues retain.
     return {
@@ -282,6 +293,16 @@ export const readMachoImage = async (
   }
 };
 
+const rangeValidSlices = (
+  header: ParsedFatContainerHeader,
+): FatSliceDeclaration[] =>
+  header.slices.filter((_, index) => header.rangeIssues[index] === null);
+
+const overlapReason = (
+  overlap: NonNullable<ReturnType<typeof findOverlappingFatSlices>>,
+): string =>
+  `Mach-O slices ${overlap[0].index} and ${overlap[1].index} overlap.`;
+
 /**
  * Apple lipo stores one hidden ARM64 row after the declared 32-bit FAT table.
  * It is only admitted from the single table-to-first-slice slot cctools
@@ -308,10 +329,17 @@ const readAppleHiddenArm64Row = async (
     return { status: "malformed", reason: row.reason };
   const declaration = { ...row.slices[0]!, index: header.count };
   if (declaration.cpuType !== CPU_TYPE_ARM64) return null;
+  const overlap = findOverlappingFatSlices([
+    ...rangeValidSlices(header),
+    declaration,
+  ]);
   return {
     status: "declared",
     declaration,
-    rangeIssue: validateFatSlice(declaration, fileSize, end),
+    rangeIssue:
+      overlap === null
+        ? validateFatSlice(declaration, fileSize, end)
+        : overlapReason(overlap),
   };
 };
 
