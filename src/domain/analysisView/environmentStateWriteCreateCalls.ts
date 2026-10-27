@@ -15,7 +15,13 @@ import {
   type FieldRule,
   type WriteBody,
 } from "./environmentStateWriteRules.js";
-import { slugOf, type Ampersand } from "./environmentStateWriteValues.js";
+import {
+  containsDelimited,
+  replaceDelimited,
+  sequenceNumber,
+  slugOf,
+  type Ampersand,
+} from "./environmentStateWriteValues.js";
 
 type Default = { readonly member: string; readonly value: JsonValue };
 type Blank = NonNullable<WriteBody["blank"]>[number];
@@ -24,6 +30,8 @@ type Blank = NonNullable<WriteBody["blank"]>[number];
 export interface EarlierEvidence {
   readonly kept: ReadonlySet<string>;
   readonly clockOf: (field: string) => JsonValue | undefined;
+  /** The integer the exemplar showed in an unruled field above every value its type held, where a sequence may start. */
+  readonly startOf?: (field: string) => number | undefined;
   /** How the plan's accepted calls and the type's held entities spelled `&` in each field's slug; absent where none showed one. */
   readonly ampersands?: ReadonlyMap<string, AmpersandSpelling>;
 }
@@ -31,14 +39,13 @@ export interface EarlierEvidence {
 /** How a field's slug showed `&`: dropped, as the word, or in a way neither spelling gives. */
 export type AmpersandSpelling = "dropped" | Ampersand | "unknown";
 
-/** The plan's rule for a field and a later call's agree: equal, or clocks one spelling covers given what earlier calls showed. */
+/** The plan's rule for a field and a later call's agree: equal, clocks one spelling covers given what earlier calls showed, slugs that differ only in how they spell `&`, or made objects alike but in the counts only the later call could show. */
 const agreeing = (
   held: FieldRule,
   later: FieldRule,
   values: {
     readonly field: string;
     readonly later: JsonValue | undefined;
-    readonly exemplar: JsonValue | undefined;
     readonly earlier: EarlierEvidence;
     readonly exemplar: JsonObject;
     readonly laterEntity: JsonObject;
@@ -46,6 +53,8 @@ const agreeing = (
 ): FieldRule | undefined => {
   const alike = alikeRules(held, later, values.earlier.kept);
   if (alike !== undefined) return alike;
+  if (held.rule === "made-object" && later.rule === "made-object")
+    return madeAlike(held, later, ownMember(values.exemplar, values.field));
   const spelled = ampersandSpelled(
     held,
     { rule: later, entity: values.laterEntity },
@@ -59,6 +68,37 @@ const agreeing = (
     values.earlier.clockOf(values.field),
   );
   return format === undefined ? undefined : { ...held, format };
+};
+
+type MadeObject = Extract<FieldRule, { rule: "made-object" }>;
+
+/** Two made-object rules as one: the same clocks, format and own members, and the earlier counts among the later's; a count only the later call shows starts at the exemplar's value, which no earlier object could show past. */
+const madeAlike = (
+  held: MadeObject,
+  later: MadeObject,
+  exemplar: JsonValue | undefined,
+): MadeObject | undefined => {
+  if (
+    !same(held.clocks, later.clocks) ||
+    !same(held.own, later.own) ||
+    !same(held.format, later.format) ||
+    held.counts.some(
+      ({ member }) => !later.counts.some((count) => count.member === member),
+    )
+  )
+    return undefined;
+  const counts: MadeObject["counts"] = [];
+  for (const { member } of later.counts) {
+    const kept = held.counts.find((count) => count.member === member);
+    const start =
+      kept?.start ??
+      sequenceNumber(
+        isObject(exemplar) ? ownMember(exemplar, member) : undefined,
+      );
+    if (start === undefined) return undefined;
+    counts.push({ member, start });
+  }
+  return { ...held, counts };
 };
 
 /** A rule with its slugs spelled the default way. */
@@ -262,7 +302,6 @@ const addedReference = (
       : agreeing(added, after, {
           field,
           later: later.entity[field],
-          exemplar: ownMember(calls.exemplar, field),
           earlier: calls.earlier,
           exemplar: calls.exemplar,
           laterEntity: later.entity,
@@ -298,7 +337,6 @@ const mergedField = (
     const rule = agreeing(before, after, {
       field,
       later: later.entity[field],
-      exemplar: ownMember(exemplar, field),
       earlier: calls.earlier,
       exemplar,
       laterEntity: later.entity,

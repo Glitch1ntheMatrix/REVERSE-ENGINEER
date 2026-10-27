@@ -310,6 +310,7 @@ const refineCreate = (
 const earlierOf = (draft: WriteDraft) => ({
   kept: draft.kept,
   clockOf: (field: string) => clockEvidence(draft, field),
+  startOf: (field: string) => draft.starts.get(field),
   ampersands: draft.ampersands,
 });
 
