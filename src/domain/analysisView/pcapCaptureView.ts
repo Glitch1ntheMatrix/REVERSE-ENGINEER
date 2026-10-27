@@ -1,6 +1,6 @@
 import { analysisViewInputError } from "./analysisViewErrors.js";
 import { z } from "zod";
-import { pcapResultSchemas } from "../pcap/pcapAnalysis.js";
+import { pcapEvidenceSchemas } from "../pcap/pcapAnalysis.js";
 import { parseAnalysisViewResult } from "./analysisViewParent.js";
 import type { AnalysisError } from "../analysisErrorBase.js";
 import { err, ok, type Result } from "../result.js";
@@ -15,7 +15,7 @@ import {
 } from "./analysisViewCoverage.js";
 import { analysisTextPage } from "./analysisViewText.js";
 
-const captureSchema = pcapResultSchemas.inspect_pcap_capture;
+const captureSchema = pcapEvidenceSchemas.inspect_pcap_capture;
 const fields = captureSchema.shape;
 const pageShape = {
   kind: z.literal("pcap"),
@@ -113,17 +113,14 @@ const parseParent = (
 ): Result<Capture, AnalysisError> => {
   const parsed = parseAnalysisViewResult(captureSchema, parent);
   if (!parsed.ok) return parsed;
-  if (
-    parent.subject?.local_path !== parsed.value.target.path ||
-    parent.subject.digest.sha256 !== parsed.value.target.sha256
-  )
+  const subject = parent.subject;
+  if (subject == null || subject.digest.sha256 !== parsed.value.target.sha256)
     return err(
       analysisViewInputError([
         {
           path: ["source", "subject"],
           reason: "invalid_value",
-          message:
-            "Packet parent subject must identify the report's exact path and SHA-256.",
+          message: "Packet parent subject must identify the report's SHA-256.",
         },
       ]),
     );

@@ -93,7 +93,7 @@ it("checks each parent's subject even after its immutable capture has been valid
     projectAnalysisView(
       {
         ...source,
-        subject: { ...source.subject, local_path: "/different.saz" },
+        subject: { ...source.subject, digest: { sha256: "e".repeat(64) } },
       },
       { kind: "summary" },
     ).ok,
@@ -334,7 +334,7 @@ it.each([
   ).toMatchObject({ ok: false, error: { _tag: "AnalysisInputError" } });
 });
 
-it("retains explicitly unknown digests and rejects a different subject path", () => {
+it("retains explicitly unknown digests and rejects a different subject digest", () => {
   const { parent, report } = capture();
   const unknown = projectAnalysisView(
     {
@@ -357,7 +357,7 @@ it("retains explicitly unknown digests and rejects a different subject path", ()
   const mismatched = projectAnalysisView(
     {
       ...parent,
-      subject: { ...parent.subject, local_path: "/different/source.saz" },
+      subject: { ...parent.subject, digest: { sha256: "e".repeat(64) } },
     },
     { kind: "summary" },
   );

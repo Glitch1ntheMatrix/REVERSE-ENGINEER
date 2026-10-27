@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { z } from "zod";
+import { utcDateTimeSchema } from "./offsetDateTime.js";
 
 import { emptyArraySchema } from "./emptyArraySchema.js";
 import {
@@ -98,7 +99,14 @@ const cookieShape = {
   same_site: z.enum(["Strict", "Lax", "None"]),
 };
 
+/** UTF-8 for well-formed strings; raw 0xff + UTF-16LE otherwise. */
+export const BROWSER_STORAGE_FINGERPRINT_VERSION = 2;
+
 const storageSnapshotSchema = z.strictObject({
+  // Absence retains the legacy, lossy UTF-8 interpretation.
+  fingerprint_version: z
+    .literal(BROWSER_STORAGE_FINGERPRINT_VERSION)
+    .optional(),
   cookies: z.array(
     z.discriminatedUnion("value_state", [
       z.strictObject({ ...cookieShape, ...hashedStorageValueShape }),
@@ -140,6 +148,20 @@ const eventBase = {
 };
 
 const eventUrl = sanitizedBrowserUrlSchema.nullable();
+/** The browser's wall-clock request start, reported once the request ends. */
+const browserStartSchema = utcDateTimeSchema
+  .optional()
+  .describe(
+    "Wall-clock time the browser started the request, as it reported at completion; absent when it reported none.",
+  );
+/** Browser-reported time from the request start to the end of its response, when the browser reports one. */
+const elapsedMsSchema = z
+  .number()
+  .nonnegative()
+  .optional()
+  .describe(
+    "Milliseconds from the request start to the end of its response, as the browser timed it; absent when it reported none.",
+  );
 const networkEventShape = {
   ...eventBase,
   transaction_id: z.string().min(1),
@@ -179,6 +201,11 @@ export const browserScenarioEventSchema = z
       kind: z.literal("request"),
       status: z.null(),
       failure: z.null(),
+      observed_at: utcDateTimeSchema
+        .optional()
+        .describe(
+          "Wall-clock time the provider observed the request start; absent in captures made before it was recorded.",
+        ),
     }),
     z.strictObject({
       ...networkEventShape,
@@ -191,12 +218,16 @@ export const browserScenarioEventSchema = z
       kind: z.literal("request-failed"),
       status: z.null(),
       failure: z.string().min(1),
+      started_at: browserStartSchema,
+      elapsed_ms: elapsedMsSchema,
     }),
     z.strictObject({
       ...networkEventShape,
       kind: z.literal("request-finished"),
       status: z.null(),
       failure: z.null(),
+      started_at: browserStartSchema,
+      elapsed_ms: elapsedMsSchema,
     }),
     z.strictObject({
       ...networkEventShape,
