@@ -1,6 +1,7 @@
 import { hasRepeatedQueryArgument } from "./environmentTools.js";
 import { stateBodyJson } from "../../domain/analysisView/EnvironmentStateAccumulator.js";
 import {
+  isObject,
   ownMember,
   collectionMatch,
   collectionPathOf,
@@ -291,13 +292,26 @@ export const softDeleteFlag = (
 };
 
 /** Fields as an application that soft-deletes shows them once deleted: with the type's deleted flag set, when it has one. */
-export const deletedFields = (
+const deletedFields = (
   serving: StateServing,
   type: string,
   fields: JsonObject,
 ): JsonObject => {
   const flag = softDeleteFlag(serving, type);
   return flag === undefined ? fields : { ...fields, [flag]: true };
+};
+
+/** Fields as a delete's answer shows them: with the type's deleted flag as its recorded answer `shown` gave it, if it did. */
+export const deleteAnswerFields = (
+  serving: StateServing,
+  type: string,
+  fields: JsonObject,
+  shown: JsonValue | undefined,
+): JsonObject => {
+  const flag = softDeleteFlag(serving, type);
+  const value =
+    flag === undefined || !isObject(shown) ? undefined : ownMember(shown, flag);
+  return value === undefined ? fields : { ...fields, [flag!]: value };
 };
 
 /** An entity a served delete removed, as an application that soft-deletes answers for it by id: with its deleted flag set. */

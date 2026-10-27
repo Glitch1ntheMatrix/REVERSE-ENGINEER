@@ -42,6 +42,29 @@ export const SOFT_DELETED_ANSWER_ROWS: readonly TimedCaptureRow[] = [
   ["GET", "/api/contacts/3", { ...RUI, deleted: true }],
 ];
 
+/** Contacts deleted by calls that answer with the record as it was, then read back marked deleted. */
+export const STALE_DELETE_ANSWER_ROWS: readonly TimedCaptureRow[] = [
+  ["GET", "/api/contacts?maxSize=20&offset=0", page([ADA, MINA, RUI])],
+  ["GET", "/api/contacts/1", ADA],
+  ["GET", "/api/contacts/2", MINA],
+  ["GET", "/api/contacts/3", RUI],
+  ["DELETE", "/api/contacts/2", MINA],
+  ["GET", "/api/contacts/2", { ...MINA, deleted: true }],
+  ["DELETE", "/api/contacts/3", RUI],
+  ["GET", "/api/contacts/3", { ...RUI, deleted: true }],
+];
+
+/** Contacts removed by one bulk call that answers them as they were, then read back marked deleted. */
+export const STALE_BULK_DELETE_ROWS: readonly TimedCaptureRow[] = [
+  ["GET", "/api/contacts?maxSize=20&offset=0", page([ADA, MINA, RUI])],
+  ["GET", "/api/contacts/1", ADA],
+  ["GET", "/api/contacts/2", MINA],
+  ["GET", "/api/contacts/3", RUI],
+  ["DELETE", "/api/contacts", [MINA, RUI], 200, [{ id: 2 }, { id: 3 }]],
+  ["GET", "/api/contacts/2", { ...MINA, deleted: true }],
+  ["GET", "/api/contacts/3", { ...RUI, deleted: true }],
+];
+
 /** Live contacts that omit `deleted`, one deleted and read back only with a query showing it marked, then a list without it. */
 export const OMITTED_FLAG_ROWS: readonly TimedCaptureRow[] = (() => {
   const live = (entity: Entity): Entity => {

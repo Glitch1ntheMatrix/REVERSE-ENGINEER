@@ -7,6 +7,8 @@ import {
   SOFT_DELETED_ANSWER_ROWS,
   SOFT_DELETED_QUERY_ROWS,
   SOFT_DELETED_ROWS,
+  STALE_DELETE_ANSWER_ROWS,
+  STALE_BULK_DELETE_ROWS,
 } from "../../../tests/fixtures/environmentStateLaterReads.js";
 import { servedFrom } from "../../../tests/fixtures/environmentStateServing.js";
 import type { JsonValue } from "../../domain/jsonValue.js";
@@ -89,6 +91,27 @@ describe("served writes modelled on later reads", () => {
       name: "Ada Finch",
       deleted: true,
     });
+  });
+
+  it("answers a soft delete with the flag its recorded answer showed, and reads the record back marked deleted", () => {
+    const contacts = servedFrom(STALE_DELETE_ANSWER_ROWS);
+    expect(contacts.answer("delete_contacts_by_id", { id: "1" }).body).toEqual({
+      id: 1,
+      name: "Ada Finch",
+      deleted: false,
+    });
+    expect(contacts.answer("get_contacts_by_id", { id: "1" }).body).toEqual({
+      id: 1,
+      name: "Ada Finch",
+      deleted: true,
+    });
+  });
+
+  it("answers a soft bulk delete with the flag its recorded answer showed", () => {
+    const contacts = servedFrom(STALE_BULK_DELETE_ROWS);
+    expect(
+      contacts.answer("delete_contacts", { body: [{ id: 1 }] }).body,
+    ).toEqual([{ id: 1, name: "Ada Finch", deleted: false }]);
   });
 
   it("reads a soft-deleted record back marked deleted when live records omit the flag", () => {

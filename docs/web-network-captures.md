@@ -849,8 +849,9 @@ base recording, with the members the state still holds. A 400, 404 or 410, a
 copy does not hold; such a read drops a held entity it names and adopts none,
 while an initial read keeps the record it shows held, as its item read answers it.
 The item view records the flag its reads set as `deleted_flag`, a field it shows
-even when only a query read showed it, which serving answers by: a served delete
-answers with the entity marked deleted, as later reads of it are. A match confirms
+even when only a query read showed it, which serving answers by: later reads of
+a served-deleted entity show it marked deleted, and a served delete answers with
+the flag as its recorded answer showed it. A match confirms
 the writes that changed its entity or collection since it was last read, less
 those whose entity a read since showed absent, which no longer count for the
 collection; a mismatch contradicts them, or, when an unmodelled write came after them, is

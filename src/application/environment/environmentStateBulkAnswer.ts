@@ -23,7 +23,7 @@ import { callSegments } from "./environmentStateCallLines.js";
 import {
   namedEntity,
   refused,
-  deletedFields,
+  deleteAnswerFields,
   softDeleteFlag,
   type StateAnswer,
   type StateServing,
@@ -184,7 +184,12 @@ export const answerBulk = (
           ...entity,
           fields: update
             ? entity.fields
-            : deletedFields(serving, entity.type, entity.fields),
+            : deleteAnswerFields(
+                serving,
+                entity.type,
+                entity.fields,
+                Array.isArray(recorded) ? recorded[0] : undefined,
+              ),
           sent: Object.keys(targets.value[index]!.body ?? {}),
         })),
         optionalFields(plan),

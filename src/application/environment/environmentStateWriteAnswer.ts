@@ -40,6 +40,7 @@ import {
   spelledLike,
 } from "../../domain/analysisView/environmentStateWriteValues.js";
 import {
+  at,
   ownMember,
   collectionMatch,
   decodedSegment,
@@ -66,7 +67,7 @@ import {
   namedEntity,
   recordedJson,
   refused,
-  deletedFields,
+  deleteAnswerFields,
   softDeleteFlag,
   stateAnswer,
   type StateAnswer,
@@ -666,12 +667,25 @@ const answerDelete = (
   const target = targetEntity(serving, request);
   if (!target.ok) return target.error;
   const entity = target.value;
-  // A soft-deleting application answers with the entity already marked deleted.
+  const { response } = request.plan;
+  const exchange =
+    response === null
+      ? undefined
+      : serving.source.exchanges.get(response.ordinal);
+  const recorded = exchange === undefined ? undefined : recordedJson(exchange);
+  // A soft-deleting application answers with the entity's deleted flag as its recorded answer showed it.
   const answer = writeAnswer(
     serving,
     request,
     {
-      fields: deletedFields(serving, entity.type, entity.fields),
+      fields: deleteAnswerFields(
+        serving,
+        entity.type,
+        entity.fields,
+        recorded === undefined
+          ? undefined
+          : at(recorded, response!.pointer ?? ""),
+      ),
       id: entity.id,
     },
     {
