@@ -25,6 +25,7 @@ import { supportedClients } from "../../../src/application/SupportedClients.js";
 import { readClientRegistrationStatuses } from "../../../src/application/ClientRegistrationStatus.js";
 import { failedConfigurationMessage } from "../../../src/application/SetupClients.js";
 import { PRODUCT_IDENTITY } from "../../../src/identity.js";
+import { CURRENT_ENTRYPOINT_PATH } from "../../../src/process/CurrentEntrypointPath.js";
 
 const pinnedPackage = PRODUCT_IDENTITY.registrationPackageSpecifier;
 
@@ -34,9 +35,11 @@ it.skipIf(process.platform === "win32")(
     const home = await createTestTempDirectory(
       "rea-config-equivalent-launcher-",
     );
-    const real = join(home, "rea-current");
+    const real = CURRENT_ENTRYPOINT_PATH;
+    if (real === undefined)
+      throw new Error("test runner entrypoint is unavailable");
     const alias = join(home, "rea-alias");
-    await writeFile(real, "current launcher\n");
+
     await symlink(real, alias);
     await mkdir(join(home, ".cursor"));
     const configPath = join(home, ".cursor", "mcp.json");
@@ -76,9 +79,11 @@ it.skipIf(process.platform === "win32")(
     const home = await createTestTempDirectory(
       "rea-config-timeout-launcher-alias-",
     );
-    const real = join(home, "rea-current");
+    const real = CURRENT_ENTRYPOINT_PATH;
+    if (real === undefined)
+      throw new Error("test runner entrypoint is unavailable");
     const alias = join(home, "rea-alias");
-    await writeFile(real, "current launcher\n");
+
     await symlink(real, alias);
     await mkdir(join(home, ".codex"));
     const configPath = join(home, ".codex", "config.toml");
