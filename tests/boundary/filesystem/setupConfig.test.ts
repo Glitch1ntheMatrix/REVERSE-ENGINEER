@@ -36,10 +36,8 @@ it.skipIf(process.platform === "win32")(
       "rea-config-equivalent-launcher-",
     );
     const real = CURRENT_ENTRYPOINT_PATH;
-    if (real === undefined)
-      throw new Error("test runner entrypoint is unavailable");
+    if (real === undefined) throw new Error("missing current entrypoint");
     const alias = join(home, "rea-alias");
-
     await symlink(real, alias);
     await mkdir(join(home, ".cursor"));
     const configPath = join(home, ".cursor", "mcp.json");
@@ -80,10 +78,8 @@ it.skipIf(process.platform === "win32")(
       "rea-config-timeout-launcher-alias-",
     );
     const real = CURRENT_ENTRYPOINT_PATH;
-    if (real === undefined)
-      throw new Error("test runner entrypoint is unavailable");
+    if (real === undefined) throw new Error("missing current entrypoint");
     const alias = join(home, "rea-alias");
-
     await symlink(real, alias);
     await mkdir(join(home, ".codex"));
     const configPath = join(home, ".codex", "config.toml");
