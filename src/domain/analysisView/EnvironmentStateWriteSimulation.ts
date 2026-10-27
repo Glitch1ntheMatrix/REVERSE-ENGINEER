@@ -46,6 +46,7 @@ import {
   showsPlacement,
   SimulatedState,
   type CheckOutcome,
+  type PendingWrite,
 } from "./environmentStateWriteChecks.js";
 import {
   checkedLines,
@@ -175,6 +176,8 @@ export class EnvironmentStateWriteSimulation {
   readonly #inserted = new Map<string, string>();
   /** Targets a write changed or placed since a passing list read last showed them, whose position no read has confirmed. */
   readonly #moved = new Set<string>();
+  /** The writes to those targets' entities, in order. */
+  #pending: PendingWrite[] = [];
   /** Creates whose insert rule a passing list check relied on, so it is no longer changed. */
   readonly #placed = new Set<string>();
   /** The order a read showed a type's collections sorted in after an update, when no create of it showed one. */
@@ -435,6 +438,7 @@ export class EnvironmentStateWriteSimulation {
     const { address } = draft.plan;
     const bulk = address !== undefined && address.by !== "action";
     const apply = (body?: ParsedRequestBody): void => {
+      this.#state.track();
       const context = this.#context(
         tool.name,
         body === undefined ? undefined : { ordinal: record.ordinal, body },
@@ -489,6 +493,12 @@ export class EnvironmentStateWriteSimulation {
       return;
     }
     this.#effects.supersede(this.#touched, write.tool, result);
+    if (result.entity !== undefined) {
+      const { type, collection, id } = result.entity;
+      const target = entityTarget(type, collection, id);
+      const before = this.#state.priorFields(target);
+      if (before !== undefined) this.#pending.push({ target, before });
+    }
     for (const target of result.targets) {
       this.#moved.add(target);
       touchTarget(this.#touched, this.#touchedSince, target, {
@@ -726,8 +736,11 @@ export class EnvironmentStateWriteSimulation {
       outcome.pass &&
       view.shape === "list" &&
       outcome.positional === undefined
-    )
-      for (const target of outcome.targets) this.#moved.delete(target);
+    ) {
+      const shown = new Set(outcome.targets);
+      for (const target of shown) this.#moved.delete(target);
+      this.#pending = this.#pending.filter((write) => !shown.has(write.target));
+    }
     if (!outcome.pass) {
       const interfered = new Set([...exercised].filter(interferes));
       if (interfered.size === 0)
@@ -1004,7 +1017,13 @@ export class EnvironmentStateWriteSimulation {
         )
       )
         continue;
-      const before = this.#state.arrange(view.type, line.collection, rule);
+      // Serving moves each written entity in turn, against the others' values before their own writes.
+      const before = this.#state.replay(
+        view.type,
+        line.collection,
+        rule,
+        this.#pending,
+      );
       const outcome = this.#check(view, record);
       if (outcome?.pass === true) {
         for (const draft of creates) draft.plan.insert = rule;

@@ -550,6 +550,27 @@ export const ID_SORTED_READ_ROWS: readonly TimedCaptureRow[] = (() => {
   ];
 })();
 
+/** Folders listed out of title order, then two renames before a list sorted by title that moving each in turn cannot reach. */
+export const UNSORTED_PENDING_ROWS: readonly TimedCaptureRow[] = (() => {
+  const [echo, foxtrot, bravo, delta] = [
+    folder(1, "Echo"),
+    folder(2, "Foxtrot"),
+    folder(3, "Bravo"),
+    folder(4, "Delta"),
+  ];
+  const charlie = folder(1, "Charlie", 2);
+  const alpha = folder(2, "Alpha", 2);
+  return [
+    ["GET", "/api/folders", [echo, foxtrot, bravo, delta]],
+    ["GET", "/api/folders/1", echo],
+    ["PUT", "/api/folders/1", charlie, 200, { title: "Charlie", version: 1 }],
+    ["GET", "/api/folders/1", charlie],
+    ["PUT", "/api/folders/2", alpha, 200, { title: "Alpha", version: 1 }],
+    ["GET", "/api/folders/2", alpha],
+    ["GET", "/api/folders", [alpha, bravo, charlie, delta]],
+  ];
+})();
+
 /** A user create that sends `active: false` and is answered so, whose read shows the account active. */
 export const ACTIVE_ON_READ_ROWS: readonly TimedCaptureRow[] = (() => {
   const user = (id: number, name: string, active: boolean): Entity => ({
