@@ -105,7 +105,68 @@ it("keeps bridge entry paths stable through worker validation and API seed match
         .filter((pathId): pathId is string => typeof pathId === "string"),
     ),
   );
-  expect(semanticPathIds).toEqual(applicationPathIds);
+  // These graphs namespace path IDs differently; their owned links retain the
+  // shared source identity and the exact (not dotted-display) entry path.
+  expect(semanticPathIds.size).toBe(2);
+  expect(applicationPathIds.size).toBe(2);
+  const semanticPaths = (output.semantic_graph?.nodes ?? []).filter(
+    ({ properties }) => typeof properties.path_id === "string",
+  );
+  const expectedPaths = new Set([
+    JSON.stringify(["desktop", "nested.write"]),
+    JSON.stringify(["desktop", "nested", "write"]),
+  ]);
+  expect(
+    new Set(
+      semanticPaths.map(({ properties }) =>
+        JSON.stringify(properties.entry_path),
+      ),
+    ),
+  ).toEqual(expectedPaths);
+  expect(
+    new Set(
+      output.graph.nodes.flatMap(({ observations }) =>
+        observations
+          .filter(({ properties }) => typeof properties.path_id === "string")
+          .map(({ properties }) => JSON.stringify(properties.entry_path)),
+      ),
+    ),
+  ).toEqual(expectedPaths);
+  for (const node of semanticPaths) {
+    const observations = node.application_node_ids
+      .flatMap(
+        (id) =>
+          output.graph.nodes.find(({ node_id }) => node_id === id)
+            ?.observations ?? [],
+      )
+      .filter(
+        ({ properties }) =>
+          typeof properties.path_id === "string" &&
+          JSON.stringify(properties.entry_path) ===
+            JSON.stringify(node.properties.entry_path) &&
+          properties.step_kind === node.properties.step_kind,
+      );
+    expect(observations.length).toBeGreaterThan(0);
+    expect(observations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          evidence: expect.objectContaining({
+            artifact: expect.objectContaining({
+              sha256: node.identity.artifact_sha256,
+            }),
+            location: {
+              available: true,
+              value: {
+                kind: "source-range",
+                source: node.identity.module_path,
+                ...node.identity.source_range,
+              },
+            },
+          }),
+        }),
+      ]),
+    );
+  }
 
   const matches = findApplicationFeatureSeeds(
     output.graph.nodes,
