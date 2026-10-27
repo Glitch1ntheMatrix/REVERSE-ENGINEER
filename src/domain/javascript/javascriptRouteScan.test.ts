@@ -149,6 +149,20 @@ it.each([
 );
 
 it.each([
+  "var routes=[{path:'/reports'}];createBrowserRouter(routes);",
+  "var ROUTES=[{path:'/reports',children:[{path:'child'}]}];createBrowserRouter(ROUTES);",
+] as const)(
+  "keeps a program-var route configuration readable without an isolated runtime: %s",
+  (source) => {
+    const facts = analyze(source);
+    expect(facts.candidates.map(({ path }) => path)).toEqual(
+      expect.arrayContaining(["/reports"]),
+    );
+    expect(facts.unresolved).toEqual([]);
+  },
+);
+
+it.each([
   ["const INDEX=true;globalThis.INDEX=false;", ""],
   ["let INDEX=true;globalThis.INDEX=false;", ""],
   ["export {};var INDEX=true;globalThis.INDEX=false;", ""],
