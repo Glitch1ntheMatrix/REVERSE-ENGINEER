@@ -5,6 +5,12 @@ lane. Start with the commands below; use [real-toolchain lanes](#real-toolchain-
 for engine prerequisites and [client verification](client-verification.md) for
 installed-client and agent runs.
 
+Historical verification records may refer to `experiments/analysis-efficiency`.
+Those experiment scripts are available in the [archived source tree](https://github.com/morluto/rea/tree/a2e2c29b59e8775b0e6aedb09a9eb16adf32646b/experiments/analysis-efficiency);
+they are not included in current checkouts. The retained [test support](https://github.com/morluto/rea/blob/main/tests/support/analysis-efficiency/README.md)
+contains deterministic checkers and fixtures. The [allocation report](verification/analysis-efficiency/mcp-integer-allocation.md)
+and its original receipt JSON remain documentation, checked by the report producer.
+
 ## Developer commands
 
 Use source feedback while editing, explicit boundary checks for the changed
@@ -474,6 +480,19 @@ When a matrix already holds a named tool definition from live `tools/list`,
 pass that definition through the SDK's `toolDefinition` call option. This keeps
 the selected output-schema validation without eagerly compiling unrelated
 catalog schemas. Re-read definitions if the server advertises a changed list.
+
+For exact nested input constraints, select the full profile explicitly or use
+the full-SDK conformance suite that owns the field. Compact workflow tests
+should assert canonical failure categories and provider-call controls where
+rejection before provider work matters. Do not make today's omission of a
+constraint a compact-profile invariant.
+
+When a file repeatedly validates the same MCP schemas, use
+`createMcpSchemaValidation` for file-owned preparation and clear it in
+`afterAll`. Its content keys include the complete schema, and the SDK provider
+keeps dialect and format validation. Keep sessions and connections scoped to
+each test; share immutable schema preparation through the fixture's validator
+dependency.
 
 Artifact verification uses `artifactMcpCall` for both lifecycle and analysis
 calls. A fresh SDK client has no held tool listing, so a bare `callTool` can
@@ -976,7 +995,7 @@ commands. Check prerequisites before starting expensive work and name the
 missing command, target, and lane in any failure message. A lane must not imply
 that a host or target is covered when it was skipped.
 
-Provider admission accepts Ghidra 12.1.x and the JDK range declared by that
+Provider admission accepts Ghidra 12.x (>=12.1) and the JDK range declared by that
 installation (`application.java.min` through `application.java.max`). Current
 12.1 releases require JDK 21 or newer and set no maximum. The lanes below still
 prove behavior on the verified Ghidra 12.1.4 and JDK 21 build.
@@ -1151,8 +1170,8 @@ its metadata regressions against the same checksum-pinned engine and public APK.
 It runs on branch pushes affecting its bridge, fixture or engine inputs, and can
 also be dispatched manually or called by another workflow. It uses the runner's
 JDK with two active processors and a 512 MiB heap; it needs no npm dependency
-installation. This lane checks exact raw/display class selectors and the existing
-cold-metadata regressions. It does not establish CLI/MCP parity or application
+installation. This lane checks exact raw/display class selectors, raw member names and field
+DEX types used by mapping lookups, and the existing cold-metadata regressions. It does not establish CLI/MCP parity or application
 execution behavior. The broader `verify:android` lane checks CLI/MCP parity;
 neither lane runs the APK.
 
@@ -1198,7 +1217,7 @@ HarmonyOS `.har` libraries are deliberately not suffix-classified because
 Synthetic producer regressions run independently:
 
 ```sh
-npm run test:focused -- tests/boundary/process/jadxIntegration.test.ts tests/boundary/process/androidAnalysisMcp.test.ts
+npm run test:focused -- tests/boundary/process/jadxIntegration.test.ts tests/boundary/process/androidAnalysisMcp.test.ts tests/boundary/process/androidMappingMcp.test.ts
 ```
 
 ## Apktool resource decoding
@@ -1361,7 +1380,7 @@ other engine versions and architectures remain unverified; see the
 
 Native IDA MCP verification uses `"protocol": "native"` with an already-running native plugin and requires `--second-procedure other_function --second-marker unique_second_body_text` to exercise GUI function switching and a return to the first function. These options remain optional for other profiles. The literal marker must appear in the second function's pseudocode and be absent from the first. Native cloud/widget failures are reported without hidden retries.
 
-The initial Linux x64 IDA Free 9.4 run used native MCP 1.1.2 with a local navigation correction. Windows x64 verification uses **IDA Pro 9.3**, the two-function public fixture, and the shipped Windows `whoami.exe` application. The native plugin was built from upstream `c9d15d98e8a143fc74f6e14037c48f63889b6d6c`, including the merged navigation fix, with a local loopback-listener change. Production CLI/MCP parity, switching, identity and cleanup passed. Correctness and performance measurements are recorded in the [Windows native verification notes](https://github.com/morluto/rea/blob/main/experiments/analysis-efficiency/ida-native-windows.md). Stock 1.1.2 switching, native macOS, and Windows IDA Free remain unverified. See the [native bridge prerequisites](ida-provider.md#optional-native-ida-mcp-bridge).
+The initial Linux x64 IDA Free 9.4 run used native MCP 1.1.2 with a local navigation correction. Windows x64 verification uses **IDA Pro 9.3**, the two-function public fixture, and the shipped Windows `whoami.exe` application. The native plugin was built from upstream `c9d15d98e8a143fc74f6e14037c48f63889b6d6c`, including the merged navigation fix, with a local loopback-listener change. Production CLI/MCP parity, switching, identity and cleanup passed. Correctness and performance measurements are recorded in the [Windows native verification notes](https://github.com/morluto/rea/blob/a2e2c29b59e8775b0e6aedb09a9eb16adf32646b/experiments/analysis-efficiency/ida-native-windows.md). Stock 1.1.2 switching, native macOS, and Windows IDA Free remain unverified. See the [native bridge prerequisites](ida-provider.md#optional-native-ida-mcp-bridge).
 
 ## Kuna lane
 
@@ -1995,12 +2014,16 @@ coverage limits.
 
 ### Offline binary layout
 
-`npm run verify:binary:layout` requires Linux x64, GCC/binutils, absolute
+`npm run verify:binary:layout` requires Linux x64, GCC/binutils, the
+`i686-linux-gnu`, `arm-linux-gnueabi`, `mips-linux-gnu` and `mipsel-linux-gnu`
+cross `gcc`/`readelf` toolchains, absolute
 `REA_PWNTOOLS_PYTHON` with pwntools 4.15.0/pyelftools 0.33/Unicorn 2.1.2 and
 absolute `REA_VERIFY_STRACE_COMMAND`. It compiles ephemeral source-owned ELF
 fixtures and checks public CLI/MCP, lossless addresses/names, file ranges,
 mitigation inferences, malformed/unsupported input, original file hashes and
-released process ownership. Exec syscall tracing must identify only the declared
+released process ownership. Cross-compiled ELF32 executables and relocatable
+objects check the reported class, machine and byte order, and every section
+name, address, offset and size against GNU `readelf`. Exec syscall tracing must identify only the declared
 Node/Python launchers; no target binary is executed. Core/debugger claims need
 separate verification lanes. Pass an installed package entrypoint as the script's
 first argument to verify packaging independently of the checkout.
