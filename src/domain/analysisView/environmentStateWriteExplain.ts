@@ -493,14 +493,6 @@ export const explainUpdate = (
       if (kept !== undefined) rules.push(kept);
       continue;
     }
-    // An empty list or map one answer spells `null` and another `[]` or `{}` is unchanged.
-    if (
-      emptySpellings(
-        ownMember(evidence.before, field),
-        ownMember(evidence.after, field),
-      )
-    )
-      continue;
     const rule = changeRule(evidence, field, slugs);
     if (rule === undefined) unexplained.push(field);
     else rules.push(rule);
