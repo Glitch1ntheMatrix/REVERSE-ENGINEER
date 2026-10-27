@@ -45,10 +45,20 @@ const mcpAddSurplusError = (
   arguments_: readonly string[],
   displayName: string,
 ): string | undefined => {
-  if (arguments_.some((token) => token === "--help" || token === "-h"))
+  const split = splitIncurBuiltinArguments(arguments_);
+  const outputValueIndexes = new Set(
+    split.outputValues.map(({ index }) => index),
+  );
+  if (
+    arguments_.some(
+      (token, index) =>
+        !outputValueIndexes.has(index) &&
+        (token === "--help" || token === "-h"),
+    )
+  )
     return undefined;
 
-  const { command } = splitIncurBuiltinArguments(arguments_);
+  const { command } = split;
   const commandOffset = command[0] === displayName ? 1 : 0;
   if (command[commandOffset] !== "mcp" || command[commandOffset + 1] !== "add")
     return undefined;

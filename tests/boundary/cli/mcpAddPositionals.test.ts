@@ -38,6 +38,27 @@ it("rejects surplus positional arguments to built-in MCP registration before wri
   const originalHome = process.env.HOME;
   try {
     process.env.HOME = invalidHome;
+    for (const helpValue of ["--help", "-h"]) {
+      const invalid = await serve(createCli({}), [
+        "mcp",
+        "add",
+        "extra",
+        "--filter-output",
+        helpValue,
+        "--agent",
+        "amp",
+        "--command",
+        "node --version",
+      ]);
+      expect(invalid.exitCode).toBe(1);
+      expect(JSON.parse(invalid.stdout)).toEqual({
+        code: "UNKNOWN",
+        message:
+          "Unexpected positional arguments: \"extra\". Use 'rea mcp add --help' for the declared argument shape.",
+      });
+      await expectMissing(join(invalidHome, ".config", "amp", "settings.json"));
+    }
+
     const invalid = await serve(createCli({}), [
       "mcp",
       "add",
