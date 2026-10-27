@@ -795,7 +795,13 @@ past those deleted before the capture. Two `made-object` rules agree in their
 clocks and own members, and a count only the later call shows starts at the
 first object's value. Members either call sent are accepted, only those every call sent are
 required, and an echoed member a call left out takes the value that call stored
-(`body.defaults`). A clock rule widens to `trimmed` only when no held entity or
+(`body.defaults`). A member a create sent empty (`""`, `null`, `false`, `[]` or
+`{}`), as a form sends a field left as it was, is not required: a call that
+leaves it out is applied as sending that value (`body.blank`), unless a call
+that left it out showed a default, which it then keeps. A call may send it as any
+recorded call sent it empty, even after a default is learned, and one leaving it
+out is applied as the earliest did, as when one create sent `false` and another
+`null`. A clock rule widens to `trimmed` only when no held entity or
 earlier call showed that clock at a fixed width, and a slug to spelling `&` as
 the word (`ampersand: "and"`) only when no call the plan accepted nor entity the
 type held dropped one. A later
