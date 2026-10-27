@@ -6,6 +6,7 @@ import {
   isObject,
   locateItem,
   at,
+  same,
   type JsonObject,
   type ParsedRequestBody,
   requestJson,
@@ -34,6 +35,7 @@ import {
 import { otherFields } from "./environmentStateWriteGenerated.js";
 import {
   contradictsEarlierCalls,
+  defaultsDisagree,
   disagreesWithCall,
   keptFields,
   rememberCall,
@@ -45,9 +47,11 @@ import {
 } from "./environmentStateWriteCalls.js";
 import {
   laterObservation,
+  respelledInstant,
   shownBefore,
   viewFields,
   type Observed,
+  type ObservedRead,
 } from "./environmentStateWriteObserve.js";
 import { plannedBody, restampedFields } from "./environmentStateWriteStamps.js";
 import { readClock } from "./environmentStateWriteValues.js";
@@ -94,6 +98,8 @@ export interface WriteDraft {
   readonly updates: UpdateCall[];
   /** The last value each sequence took, by field and, for a collection's sequence, collection; the next call must follow it. */
   readonly sequences: Map<string, number>;
+  /** Integers the exemplar showed in fields no rule wrote, above every value its type held, where a later call's sequence may start. */
+  readonly starts: Map<string, number>;
   /** The collection a create writes into when its own path names no state type: the one its returned id was read under. */
   readonly linked?: string | undefined;
   /** Fields an item action's call found already at the value it sets them to. */
@@ -163,6 +169,8 @@ export interface EffectContext {
   readonly isWrite: (record: StateRecordFacts) => boolean;
   readonly viewOf: (ordinal: number) => StateView | undefined;
   readonly idField: (type: string) => string;
+  /** Fields of a type whose values change on their own, which no read checks. */
+  readonly volatileOf: (type: string) => ReadonlySet<string>;
   /** Mark a later read as a create's or update's observation, so it does not check that write. */
   readonly observed: (ordinal: number) => void;
   /** Whether an unmodelled write may have changed the entity since the state last saw it. */
@@ -171,6 +179,8 @@ export interface EffectContext {
   readonly initialDocument: (tool: string) => StateDocument | undefined;
   /** The entities of a type the initial state held, whose values a sequence never reuses. */
   readonly startedWith: (type: string) => readonly StateEntity[];
+  /** Fields the type's item views show that no initial entity holds, which an answer leaves out for an entity without them. */
+  readonly laterFields: (type: string) => ReadonlySet<string>;
   /** Whether another tool's modelled write to the target awaits a check, which a later read must still make. */
   readonly pending: (target: string) => boolean;
 }
@@ -479,6 +489,37 @@ const outcomes = (
   return { targets, target, recorded };
 };
 
+/** The item read after an update that spells a clock the update stamped at a coarser precision, which serving stores it as. */
+const spelledReadBack = (
+  context: EffectContext,
+  step: WriteStep,
+  target: {
+    readonly type: string;
+    readonly idField: string;
+    readonly collection: string;
+    readonly id: string;
+  },
+  call: { readonly rules: readonly FieldRule[]; readonly after: JsonObject },
+): ObservedRead | undefined => {
+  const read = laterObservation(
+    searchFrom(context, step),
+    itemReads(context, target),
+  );
+  if (read === undefined || context.viewOf(read.ordinal)?.shape !== "item")
+    return undefined;
+  const respelled = call.rules.some((rule) => {
+    if (rule.rule !== "clock") return false;
+    const [own, shown] = [
+      ownMember(call.after, rule.field),
+      ownMember(read.object, rule.field),
+    ];
+    return !same(own, shown) && respelledInstant(own, shown);
+  });
+  return respelled
+    ? { ordinal: read.ordinal, pointer: read.pointer, shape: "item" }
+    : undefined;
+};
+
 /** Build an update plan from its exemplar, or add what a later call showed. */
 const buildUpdate = (
   context: EffectContext,
@@ -640,7 +681,14 @@ export const updateEntity = (
         entity.fields,
         after.object,
         explained,
-      ))
+      ) ||
+      // A member calls left out is cleared by every one or by none.
+      defaultsDisagree(explained.body.defaults, { earlier: draft.updates }) ||
+      defaultsDisagree(draft.plan.body?.defaults, {
+        earlier: [],
+        sent: body,
+        after: after.object,
+      }))
   ) {
     if (!unknown) refuse(draft, step, "unexplained-change");
     return recorded();
@@ -648,6 +696,21 @@ export const updateEntity = (
   draft.plan.rules = rules;
   noteFixedWidths(draft.fixedWidth, after.object);
   buildUpdate(context, draft, step, { after, explained, idField });
+  // Serving stores the clocks it stamps as the read after the update spells them.
+  const readBack = spelledReadBack(
+    context,
+    step,
+    { type, idField, collection, id },
+    { rules: explained.rules, after: after.object },
+  );
+  if (
+    readBack !== undefined &&
+    draft.plan.observation !== null &&
+    draft.plan.observation.read === undefined
+  )
+    Object.assign(draft.plan, {
+      observation: { ...draft.plan.observation, read: readBack },
+    });
   noteAmpersands(draft.ampersands, explained.rules, after.object);
   // Serving reads the plan's observation, so the gate does too; generated values are this call's.
   const written = updatedFields(

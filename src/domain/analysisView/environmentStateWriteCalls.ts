@@ -228,11 +228,21 @@ export const refinedBody = (
   const accepted = later.accepted.filter(
     (member) => !body.accepted.includes(member),
   );
+  const held = body.defaults ?? [];
+  const defaults = [
+    ...held,
+    ...(later.defaults ?? []).filter(
+      (entry) => !held.some((kept) => kept.member === entry.member),
+    ),
+  ];
   return {
     ...body,
+    ...(defaults.length === 0 ? {} : { defaults }),
     // A later call may be the first to show the body repeating the path's id.
     identity: body.identity ?? later.identity,
     accepted: [...body.accepted, ...accepted],
+    // A member is required only when every call sent it.
+    required: body.required.filter((member) => later.required.includes(member)),
     fixed: [
       ...body.fixed,
       ...later.fixed.filter((entry) => !fixed.has(entry.member)),
@@ -313,6 +323,30 @@ export const appliedUpdate = (
     changed,
   };
 };
+
+/** Whether defaults disagree with a call that left their member out: a remembered call, or this one, showed it otherwise. */
+export const defaultsDisagree = (
+  defaults: WriteBody["defaults"],
+  calls: {
+    readonly earlier: readonly UpdateCall[];
+    readonly sent?: JsonObject;
+    readonly after?: JsonObject;
+  },
+): boolean =>
+  (defaults ?? []).some(
+    ({ member, value }) =>
+      calls.earlier.some(
+        (call) =>
+          !call.sent.has(member) &&
+          call.shown.has(member) &&
+          !same(call.shown.get(member), observedValue(value)),
+      ) ||
+      (calls.sent !== undefined &&
+        calls.after !== undefined &&
+        !Object.hasOwn(calls.sent, member) &&
+        Object.hasOwn(calls.after, member) &&
+        !same(calls.after[member], value)),
+  );
 
 /** Keep what a modelled update call showed, which later calls' rules must reproduce, and the fields it found already set. */
 export const rememberCall = (
