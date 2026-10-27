@@ -22,16 +22,24 @@
  */
 import { Formatter } from "incur";
 
-export class CliDelimitedOutputError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "CliDelimitedOutputError";
-  }
-}
+import { AnalysisInputError } from "../domain/analysisErrorCore.js";
+import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
+import { err, ok, type Result } from "../domain/result.js";
 
 export interface CliDelimitedOutputOptions {
   readonly fields: readonly string[];
   readonly metadata: Readonly<Record<string, unknown>>;
+}
+
+type DelimitedScalar = string | number | boolean | null | undefined;
+
+export interface PreparedDelimitedOutput {
+  readonly encodedHeaders: readonly string[];
+  readonly rows: readonly (readonly DelimitedScalar[])[];
+  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly delimiter: string;
+  readonly lineEnding: string;
+  readonly format: "csv" | "tsv";
 }
 
 /** Keep REA's Markdown layout compatible with Incur while owning table safety. */
@@ -41,81 +49,162 @@ export const formatCliOutput = (
   delimited?: CliDelimitedOutputOptions,
 ): string => {
   if (format === "csv" || format === "tsv") {
-    if (delimited === undefined)
-      throw new CliDelimitedOutputError(
-        "CSV/TSV output requires a selected row collection and explicit fields.",
-      );
-    return formatDelimitedRows(value, format, delimited);
+    const prepared = prepareDelimitedOutput(
+      value,
+      format,
+      delimited ?? {
+        fields: [],
+        metadata: {},
+      },
+    );
+    return prepared.ok
+      ? [...formatDelimitedOutputParts(prepared.value)].join("")
+      : Formatter.format(projectAnalysisError(prepared.error), "json");
   }
   return format === "md"
     ? formatMarkdown(value)
     : Formatter.format(value, format);
 };
 
-/** Render selected scalar cells, preceded by a versioned metadata record. */
+/** Validate a complete row page before the caller writes any output. */
+export const prepareDelimitedOutput = (
+  rows: unknown,
+  format: "csv" | "tsv",
+  { fields, metadata }: CliDelimitedOutputOptions,
+): Result<PreparedDelimitedOutput, AnalysisInputError> => {
+  const operation =
+    typeof metadata.command === "string"
+      ? metadata.command
+      : "render-cli-delimited-output";
+  if (!isPlainObjectArray(rows))
+    return err(
+      delimitedOutputInputError(
+        ["--filter-output"],
+        Array.isArray(rows)
+          ? "CSV/TSV output requires every selected row to be a plain object."
+          : "The selected output path does not contain a row array.",
+        operation,
+      ),
+    );
+  if (fields.length === 0)
+    return err(
+      delimitedOutputInputError(
+        ["--columns"],
+        "CSV/TSV output requires at least one explicitly selected field.",
+        operation,
+      ),
+    );
+
+  const encodedHeaders: string[] = [];
+  for (const field of fields) {
+    if (isSpreadsheetFormula(field))
+      return err(
+        delimitedOutputInputError(
+          ["--columns", field],
+          "CSV/TSV output refuses spreadsheet formula-leading text; JSON retains the exact value.",
+          operation,
+        ),
+      );
+    encodedHeaders.push(encodeDelimitedText(field, format));
+  }
+
+  const preparedRows: DelimitedScalar[][] = [];
+  for (const record of rows) {
+    const preparedRow: DelimitedScalar[] = [];
+    for (const field of fields) {
+      const value = Object.hasOwn(record, field) ? record[field] : undefined;
+      if (
+        value !== null &&
+        value !== undefined &&
+        typeof value !== "string" &&
+        typeof value !== "boolean" &&
+        !(typeof value === "number" && Number.isFinite(value))
+      )
+        return err(
+          delimitedOutputInputError(
+            ["--columns", field],
+            "CSV/TSV cells must be scalar values; nested objects and arrays are not flattened.",
+            operation,
+          ),
+        );
+      if (typeof value === "string" && isSpreadsheetFormula(value))
+        return err(
+          delimitedOutputInputError(
+            ["--columns", field],
+            "CSV/TSV output refuses spreadsheet formula-leading text; JSON retains the exact value.",
+            operation,
+          ),
+        );
+      preparedRow.push(value);
+    }
+    preparedRows.push(preparedRow);
+  }
+
+  return ok({
+    encodedHeaders,
+    rows: preparedRows,
+    metadata,
+    delimiter: format === "csv" ? "," : "\t",
+    lineEnding: format === "csv" ? "\r\n" : "\n",
+    format,
+  });
+};
+
+export const delimitedOutputInputError = (
+  path: readonly (string | number)[],
+  message: string,
+  operation = "render-cli-delimited-output",
+): AnalysisInputError =>
+  new AnalysisInputError(operation, { userMessage: message }, [
+    { path, reason: "invalid_value", message },
+  ]);
+
+/** Render a validated row page, preceded by a versioned metadata record. */
 export const formatDelimitedRows = (
   rows: unknown,
   format: "csv" | "tsv",
   options: CliDelimitedOutputOptions,
-): string => [...formatDelimitedOutputParts(rows, format, options)].join("");
+): Result<string, AnalysisInputError> => {
+  const prepared = prepareDelimitedOutput(rows, format, options);
+  return prepared.ok
+    ? ok([...formatDelimitedOutputParts(prepared.value)].join(""))
+    : prepared;
+};
 
-/** Validate the complete selected page before yielding its first output byte. */
-export function* formatDelimitedOutputParts(
-  rows: unknown,
-  format: "csv" | "tsv",
-  { fields, metadata }: CliDelimitedOutputOptions,
-): Generator<string> {
-  if (!isPlainObjectArray(rows))
-    throw new CliDelimitedOutputError(
-      Array.isArray(rows)
-        ? "CSV/TSV output requires every selected row to be a plain object."
-        : "The selected output path does not contain a row array.",
-    );
-  if (fields.length === 0)
-    throw new CliDelimitedOutputError(
-      "CSV/TSV output requires at least one explicitly selected field.",
-    );
-
-  const delimiter = format === "csv" ? "," : "\t";
-  const lineEnding = format === "csv" ? "\r\n" : "\n";
-  const encodedFields = fields.map((field) =>
-    encodeDelimitedCell(field, format),
-  );
-  for (const record of rows)
-    for (const field of fields)
-      encodeDelimitedCell(
-        Object.hasOwn(record, field) ? record[field] : undefined,
-        format,
-      );
-
+/** Stream a page after its rows and cells have been validated and snapshotted. */
+export function* formatDelimitedOutputParts({
+  encodedHeaders,
+  rows,
+  metadata,
+  delimiter,
+  lineEnding,
+  format,
+}: PreparedDelimitedOutput): Generator<string> {
   yield `# rea-delimited-v1 ${JSON.stringify(metadata)}${lineEnding}`;
-  yield `${encodedFields.join(delimiter)}${lineEnding}`;
-  for (const record of rows)
-    yield `${fields
-      .map((field) =>
-        encodeDelimitedCell(
-          Object.hasOwn(record, field) ? record[field] : undefined,
-          format,
-        ),
-      )
+  yield `${encodedHeaders.join(delimiter)}${lineEnding}`;
+  for (const row of rows)
+    yield `${row
+      .map((value) => encodeDelimitedScalar(value, format))
       .join(delimiter)}${lineEnding}`;
 }
 
-const encodeDelimitedCell = (value: unknown, format: "csv" | "tsv"): string => {
+const encodeDelimitedScalar = (
+  value: DelimitedScalar,
+  format: "csv" | "tsv",
+): string => {
   if (value === null || value === undefined) return "";
-  let text: string;
-  if (typeof value === "string") text = value;
-  else if (typeof value === "boolean") text = String(value);
-  else if (typeof value === "number" && Number.isFinite(value))
-    text = String(value);
-  else
-    throw new CliDelimitedOutputError(
-      "CSV/TSV cells must be scalar values; nested objects and arrays are not flattened.",
-    );
+  const text = String(value);
+  return encodeDelimitedText(text, format);
+};
+
+const encodeDelimitedText = (text: string, format: "csv" | "tsv"): string => {
   const needsQuotes =
     format === "csv" ? /[",\r\n]/u.test(text) : /["\t\r\n]/u.test(text);
   return needsQuotes ? `"${text.replace(/"/gu, '""')}"` : text;
 };
+
+const isSpreadsheetFormula = (value: string): boolean =>
+  /^[\u0000-\u0020]*[=+\-@]/u.test(value) || /^[\t\r]/u.test(value);
 
 const isPlainObjectArray = (
   value: unknown,

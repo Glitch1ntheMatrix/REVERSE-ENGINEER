@@ -1,9 +1,6 @@
 import { expect, it } from "vitest";
 
-import {
-  CliDelimitedOutputError,
-  formatDelimitedRows,
-} from "../../../src/cli/cliOutputFormatter.js";
+import { formatDelimitedRows } from "../../../src/cli/cliOutputFormatter.js";
 
 const parseDelimited = (source: string, delimiter: string): string[][] => {
   const records: string[][] = [];
@@ -71,10 +68,12 @@ it.each([
         view: { offset: 0, limit: 3 },
       },
     });
+    expect(output.ok).toBe(true);
+    if (!output.ok) throw output.error;
     const lineEnding = format === "csv" ? "\r\n" : "\n";
-    const metadataEnd = output.indexOf(lineEnding);
-    const metadataLine = output.slice(0, metadataEnd);
-    const records = output
+    const metadataEnd = output.value.indexOf(lineEnding);
+    const metadataLine = output.value.slice(0, metadataEnd);
+    const records = output.value
       .slice(metadataEnd + lineEnding.length)
       .replace(/\r?\n$/u, "");
     expect(
@@ -94,10 +93,44 @@ it.each([
 );
 
 it("does not flatten nested selected field values", () => {
-  expect(() =>
+  expect(
     formatDelimitedRows([{ details: { name: "nested" } }], "csv", {
       fields: ["details"],
       metadata: {},
     }),
-  ).toThrow(CliDelimitedOutputError);
+  ).toMatchObject({
+    ok: false,
+    error: { _tag: "AnalysisInputError" },
+  });
+});
+
+it.each(["=1+1", "  =1+1", "+1", "-1", "@SUM(A1:A2)"])(
+  "refuses formula-leading string cells without changing the source value %j",
+  (value) => {
+    const row = { target: value };
+    const result = formatDelimitedRows([row], "csv", {
+      fields: ["target"],
+      metadata: {},
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisInputError",
+        userMessage: expect.stringContaining("formula-leading"),
+      },
+    });
+    expect(row.target).toBe(value);
+  },
+);
+
+it("refuses formula-leading column headers", () => {
+  expect(
+    formatDelimitedRows([{ value: "safe" }], "csv", {
+      fields: ["=header"],
+      metadata: {},
+    }),
+  ).toMatchObject({
+    ok: false,
+    error: { _tag: "AnalysisInputError" },
+  });
 });

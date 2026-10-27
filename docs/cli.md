@@ -950,12 +950,15 @@ CSV records use CRLF line endings; TSV records use LF. Cells containing the
 delimiter, quotes, or line breaks are quoted and embedded quotes are doubled.
 Values are emitted as UTF-8 without Unicode normalization. Missing and `null`
 cells are empty; booleans and finite numbers use their ordinary text forms.
+String cells and headers that begin with spreadsheet formula syntax are refused
+with a structured error; JSON retains those values unchanged.
 
 Delimited output does not flatten nested Evidence or nested field values.
 It returns a structured error and a nonzero status if the filter does not
 select exactly one row array, a row is not an object, or a selected cell is
-nested. JSON remains the complete canonical output; use it to retain fields
-outside the selected columns. Token counting and token windows are not
+nested or formula-leading. JSON remains the complete canonical output; use it
+to retain fields outside the selected columns or preserve exact formula-leading
+text. Token counting and token windows are not
 available for CSV/TSV because slicing would corrupt records or metadata.
 
 `--filter-output` selects fields from successful command data. Classified failures

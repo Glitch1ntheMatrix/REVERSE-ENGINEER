@@ -14,15 +14,17 @@ import {
   AnalysisInputError,
   AnalysisResourceConstraintError,
 } from "../domain/analysisErrorCore.js";
+import { err, ok, type Result } from "../domain/result.js";
 import { sliceTextByTokenWindow } from "./tokenWindow.js";
 import {
   projectAnalysisError,
   type AnalysisErrorProjection,
 } from "../domain/analysisErrorProjection.js";
 import {
-  CliDelimitedOutputError,
   formatDelimitedOutputParts,
   formatCliOutput,
+  prepareDelimitedOutput,
+  delimitedOutputInputError,
 } from "./cliOutputFormatter.js";
 import { jsonLinesErrorRecord } from "./jsonLines.js";
 import { writeCliJsonLines } from "./jsonLinesOutput.js";
@@ -333,9 +335,12 @@ export const createCliResultOutput = (
           analysisErrorProjectionSchema.safeParse(operationFailure);
         error = parsedFailure.success
           ? parsedFailure.data
-          : delimitedOutputError(
-              metadata.command,
-              "CSV/TSV output was not produced because the command did not return a successful row collection.",
+          : projectAnalysisError(
+              delimitedOutputInputError(
+                ["--format"],
+                "CSV/TSV output was not produced because the command did not return a successful row collection.",
+                metadata.command,
+              ),
             );
         handled = true;
         try {
@@ -351,32 +356,19 @@ export const createCliResultOutput = (
         }
         return true;
       }
-      try {
-        const selection = resolveDelimitedRows(value, filterPaths);
-        if (selection === undefined)
-          throw new CliDelimitedOutputError(
-            "--filter-output must select exactly one row-array path using object-field segments only.",
-          );
-        const delimitedOptions = {
-          fields: options.columns ?? [],
-          metadata: delimitedMetadata(selection, format, metadata),
-        };
-        const parts = formatDelimitedOutputParts(
-          selection.rows,
-          format,
-          delimitedOptions,
-        );
-        handled = true;
-        try {
-          await writeOutputParts(destination, parts);
-        } catch (cause: unknown) {
-          if (cause instanceof CliDelimitedOutputError) throw cause;
-          failed = true;
-          throw cause;
-        }
-      } catch (cause: unknown) {
-        if (!(cause instanceof CliDelimitedOutputError)) throw cause;
-        error = delimitedOutputError(metadata.command, cause.message);
+      const selection = resolveDelimitedRows(
+        value,
+        filterPaths,
+        metadata.command,
+      );
+      const prepared = selection.ok
+        ? prepareDelimitedOutput(selection.value.rows, format, {
+            fields: options.columns ?? [],
+            metadata: delimitedMetadata(selection.value, format, metadata),
+          })
+        : selection;
+      if (!prepared.ok) {
+        error = projectAnalysisError(prepared.error);
         handled = true;
         try {
           await writeJsonOutput(
@@ -386,6 +378,17 @@ export const createCliResultOutput = (
         } catch (writeFailure: unknown) {
           failed = true;
           throw writeFailure;
+        }
+      } else {
+        handled = true;
+        try {
+          await writeOutputParts(
+            destination,
+            formatDelimitedOutputParts(prepared.value),
+          );
+        } catch (cause: unknown) {
+          failed = true;
+          throw cause;
         }
       }
       return true;
@@ -640,22 +643,31 @@ type FilterPath = FilterPaths[number];
 interface DelimitedRowsSelection {
   readonly rows: readonly unknown[];
   readonly path: readonly string[];
-  readonly parent: Readonly<Record<string, unknown>> | undefined;
+  readonly ancestors: readonly Readonly<Record<string, unknown>>[];
 }
 
 const resolveDelimitedRows = (
   source: unknown,
   paths: FilterPaths | undefined,
-): DelimitedRowsSelection | undefined => {
-  if (paths === undefined || paths.length !== 1) return undefined;
+  operation: string,
+): Result<DelimitedRowsSelection, AnalysisInputError> => {
+  const invalidSelection = (): Result<never, AnalysisInputError> =>
+    err(
+      delimitedOutputInputError(
+        ["--filter-output"],
+        "--filter-output must select exactly one row-array path using object-field segments only.",
+        operation,
+      ),
+    );
+  if (paths === undefined || paths.length !== 1) return invalidSelection();
   const path: string[] = [];
   for (const segment of paths[0] ?? []) {
-    if (!("key" in segment)) return undefined;
+    if (!("key" in segment)) return invalidSelection();
     path.push(segment.key);
   }
-  if (path.length === 0) return undefined;
+  if (path.length === 0) return invalidSelection();
   let current: unknown = source;
-  let parent: Readonly<Record<string, unknown>> | undefined;
+  const ancestors: Readonly<Record<string, unknown>>[] = [];
   for (const key of path) {
     if (
       typeof current !== "object" ||
@@ -663,11 +675,14 @@ const resolveDelimitedRows = (
       Array.isArray(current) ||
       !Object.hasOwn(current, key)
     )
-      return undefined;
-    parent = current as Readonly<Record<string, unknown>>;
-    current = parent[key];
+      return invalidSelection();
+    const owner = current as Readonly<Record<string, unknown>>;
+    ancestors.push(owner);
+    current = owner[key];
   }
-  return Array.isArray(current) ? { rows: current, path, parent } : undefined;
+  return Array.isArray(current)
+    ? ok({ rows: current, path, ancestors })
+    : invalidSelection();
 };
 
 const delimitedMetadata = (
@@ -675,27 +690,35 @@ const delimitedMetadata = (
   format: "csv" | "tsv",
   metadata: CliResultOutputMetadata,
 ): Readonly<Record<string, unknown>> => {
-  const parent = selection.parent;
+  const valueFromOwner = (
+    key: string,
+  ): { readonly found: boolean; readonly value: unknown } => {
+    for (let index = selection.ancestors.length - 1; index >= 0; index -= 1) {
+      const owner = selection.ancestors[index]!;
+      if (Object.hasOwn(owner, key)) return { found: true, value: owner[key] };
+    }
+    return { found: false, value: undefined };
+  };
   const projectOwnFields = (
     keys: readonly string[],
   ): Readonly<Record<string, unknown>> =>
     Object.fromEntries(
-      keys.flatMap((key) =>
-        parent !== undefined && Object.hasOwn(parent, key)
-          ? [[key, parent[key]]]
-          : [],
-      ),
+      keys.flatMap((key) => {
+        const found = valueFromOwner(key);
+        return found.found ? [[key, found.value]] : [];
+      }),
     );
+  const metadataValue = (key: string): unknown => valueFromOwner(key).value;
   return {
     version: 1,
     format,
     command: metadata.command,
     duration: metadata.duration,
     selected_path: selection.path,
-    coverage: parent?.coverage ?? null,
-    source_coverage: parent?.source_coverage ?? null,
-    source_complete: parent?.source_complete ?? null,
-    view: parent?.view ?? null,
+    coverage: metadataValue("coverage") ?? null,
+    source_coverage: metadataValue("source_coverage") ?? null,
+    source_complete: metadataValue("source_complete") ?? null,
+    view: metadataValue("view") ?? null,
     provenance: projectOwnFields([
       "parent_evidence_id",
       "parent_operation",
@@ -712,20 +735,6 @@ const delimitedMetadata = (
     ]),
   };
 };
-
-const delimitedOutputError = (
-  operation: string,
-  message: string,
-): AnalysisErrorProjection =>
-  projectAnalysisError(
-    new AnalysisInputError(operation, { userMessage: message }, [
-      {
-        path: ["--format"],
-        reason: "invalid_value",
-        message,
-      },
-    ]),
-  );
 
 /** Apply Incur's parsed path grammar while merging sibling array selections. */
 const applyCliOutputFilter = (value: unknown, paths: FilterPaths): unknown => {

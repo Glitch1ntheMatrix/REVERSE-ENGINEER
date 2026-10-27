@@ -166,6 +166,17 @@ describe("CLI output argument boundary", () => {
   });
 });
 
+it("preserves flag-shaped values consumed by valued output options", () => {
+  expect(
+    adaptCliOutputArgumentsForIncur([
+      "--filter-output",
+      "--columns",
+      "providers",
+      "--json",
+    ]),
+  ).toEqual(["--filter-output", "--columns", "providers", "--json"]);
+});
+
 describe("CLI output value admission", () => {
   it.each(["--token-limit", "--token-offset"])(
     "rejects invalid %s values before dispatch and preserves later JSON selection",

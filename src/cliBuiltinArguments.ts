@@ -114,13 +114,21 @@ export const adaptCliOutputArgumentsForIncur = (
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index]!;
     const value = arguments_[index + 1];
-    if (argument === "--columns") {
-      if (value !== undefined) index += 1;
-      continue;
-    }
-    if (argument === "--format" && (value === "csv" || value === "tsv")) {
-      adapted.push("--format", "json");
-      index += 1;
+    if (VALUED_OUTPUT_FLAGS.has(argument)) {
+      if (argument === "--columns") {
+        if (value !== undefined) index += 1;
+        continue;
+      }
+      if (argument === "--format" && (value === "csv" || value === "tsv")) {
+        adapted.push("--format", "json");
+        index += 1;
+        continue;
+      }
+      adapted.push(argument);
+      if (value) {
+        adapted.push(value);
+        index += 1;
+      }
       continue;
     }
     adapted.push(argument);

@@ -103,6 +103,58 @@ it.each(["csv", "tsv"] as const)(
   },
 );
 
+it("retains owning-view metadata when rows are selected through a nested page", async () => {
+  const value = {
+    normalized_result: {
+      kind: "managed-members",
+      parent_evidence_id: "evd_parent",
+      parent_operation: "inspect_managed_members",
+      parent_digest: "parent",
+      coverage: { total: 4, next_offset: 2, exhausted: false },
+      source_coverage: { status: "partial" },
+      view: {
+        kind: "managed-members",
+        collection: "methods",
+        offset: 1,
+        limit: 1,
+      },
+      page: { collection: "methods", rows: [{ name: "Run" }] },
+    },
+  };
+  const output = await runFilteredCli(
+    value,
+    "csv",
+    "normalized_result.page.rows",
+    ["name"],
+  );
+  const [metadataLine] = output.split(/\r?\n/u);
+  expect(
+    JSON.parse(metadataLine!.slice("# rea-delimited-v1 ".length)),
+  ).toMatchObject({
+    selected_path: ["normalized_result", "page", "rows"],
+    coverage: { total: 4, next_offset: 2 },
+    source_coverage: { status: "partial" },
+    view: { collection: "methods", offset: 1, limit: 1 },
+    provenance: {
+      parent_evidence_id: "evd_parent",
+      parent_operation: "inspect_managed_members",
+      parent_digest: "parent",
+    },
+  });
+});
+
+it("refuses spreadsheet formula-leading text in CSV but preserves it in JSON", async () => {
+  const value = { rows: [{ logical_path: "=1+1" }] };
+  const csv = await runFilteredCli(value, "csv", "rows", ["logical_path"], 1);
+  expect(JSON.parse(csv)).toMatchObject({
+    code: "invalid_request",
+    category: "invalid_input",
+    message: expect.stringContaining("formula-leading"),
+  });
+  const json = await runFilteredCli(value, "json");
+  expect(JSON.parse(json)).toEqual(value);
+});
+
 it("returns a structured limitation when a selected CSV cell is nested", async () => {
   const output = await runFilteredCli(
     { normalized_result: { rows: [{ nested: { value: "not flattened" } }] } },
