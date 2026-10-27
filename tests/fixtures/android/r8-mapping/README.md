@@ -34,7 +34,7 @@ compiler. `MAPPING_RUN` must be a fresh caller-selected output directory.
 ```bash
 MAPPING_JDK=/home/yann/.cache/rea/ghidra-optimization-20261017/installed/jdk-21.0.12.1+1
 ANDROID_PLATFORM_JAR=/home/yann/.cache/rea-4537-android-sdk/platforms/android-36/android.jar
-MAPPING_FIXTURE=/absolute/worktree/experiments/analysis-efficiency/fixtures/android-mapping
+MAPPING_FIXTURE=/absolute/worktree/tests/fixtures/android/r8-mapping
 MAPPING_R8_JAR=/absolute/cache/r8-8.0.40.jar
 MAPPING_RUN=/absolute/fresh-output-directory
 mkdir -p "$MAPPING_RUN/classes" "$MAPPING_RUN/oracle"
@@ -101,7 +101,7 @@ must never select one original by name alone.
 
 ## Executed public library check
 
-The companion `../../android-mapping.mjs` harness drives production stdio MCP,
+The companion `../../../support/analysis-efficiency/android-mapping.mjs` harness drives production stdio MCP,
 validates the SDK-converted advertised output schemas, and checks all observed
 fields and methods against this oracle. `--variants` also checks partial and
 malformed records, duplicate class blocks and conflicting residual metadata
@@ -119,7 +119,7 @@ verified against its publisher SHA-256 sidecar. R8 used the same options plus
 files. D8 warned that `com.android.org.conscrypt.OpenSSLSocketImpl` was missing
 for a platform adapter. This check verifies static symbol translation for the
 selected classes; it does not establish complete dependency resolution or
-runnable library linkage. See the adjacent efficiency report for measured
+runnable library linkage. See the [verification report](../../../../docs/verification/android-r8-mapping-2026-10-27.md) for measured
 workflow scope and digests.
 
 Stable R8 consumes class files, not an APK's DEX. Official

@@ -16,11 +16,13 @@ Both controls use main `4e67bc399951768737eeaf539f7bc9fa8373b244`:
   that unmodified main already supported mappings.
 - After: `6b65d3a4a1a8307417365b9a1e9060e607538aa3`, bounded/cached mapping
   and explicit retained summary delivery. Later documentation changes do not
-  alter the measured implementation.
+  alter the measured implementation. Following main’s experiment archive, the
+  maintained harness/fixtures now live under tests and this report under
+  docs/verification; the original measured scripts remain available at that pinned revision.
 - The original #7137 author is 555aaditya; integration retains their co-author
   credit and preserves #7379's shared manifest contracts/default-package tests.
 
-The [source fixture](fixtures/android-mapping/README.md) has four classes,
+The [source fixture](../../tests/fixtures/android/r8-mapping/README.md) has four classes,
 eight fields and fifteen methods, including constructors, overloads, Unicode
 names, nested/default-package classes, arrays and renamed types in prototypes.
 The same actual R8 invocation emits DEX and mapping. Handwritten source
@@ -105,7 +107,7 @@ server and children were restricted to CPUs 0/1; Node heap was 3 GiB. Expensive
 checks ran serially under an 8 GiB sampled family-RSS stop and a 4 GiB host-free
 memory guard. No guard stopped a completed task and no OOM occurred.
 
-The [public stdio MCP harness](android-mapping.mjs) uses named live tool
+The [public stdio MCP harness](../../tests/support/analysis-efficiency/android-mapping.mjs) uses named live tool
 contracts and Ajv 2020 validation of SDK-converted advertised outputs. All
 correctness comparisons, hash reads, discovery and cleanup are included in the
 whole-harness cost. First-provider calls use fresh processes/JVMs; OS file caches
@@ -148,7 +150,7 @@ are not substituted for the completed proof-export task above.
 
 ## Whole-task token estimates
 
-[android-mapping-costs.py](android-mapping-costs.py) executed with tiktoken
+[android-mapping-costs.py](../../tests/support/analysis-efficiency/android-mapping-costs.py) executed with tiktoken
 0.14.0/o200k_base. Text projection counts a fixed task question, all discovered
 name/description/input schemas once per investigation, every RPC argument and
 all text replies, including proof export. SDK transport additionally counts
@@ -235,7 +237,7 @@ Keep separate before/after worktrees, pin their revisions above, build both and
 use identical target/mapping/oracle bytes. Then run the same harness for each:
 
 ```sh
-node experiments/analysis-efficiency/android-mapping.mjs \
+node tests/support/analysis-efficiency/android-mapping.mjs \
   --repository "$SELECTED_REPOSITORY" --target "$STATIC_APK" \
   --mapping "$MAPPING_FILE" --output "$FRESH_RESULTS" \
   --java-home "$SELECTED_JDK" --jar "$JADX_MCP_JAR" \
@@ -253,7 +255,7 @@ partial, duplicate and conflicting mappings; those extra qualification calls
 are not part of the timing/token table's repeated task.
 
 ```sh
-python experiments/analysis-efficiency/android-mapping-costs.py \
+python tests/support/analysis-efficiency/android-mapping-costs.py \
   --output "$TOKEN_RESULTS" "$BEFORE_RESULTS" "$AFTER_RESULTS"
 ```
 
