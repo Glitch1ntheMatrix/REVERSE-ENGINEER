@@ -1,10 +1,15 @@
 import { z } from "zod";
-import { localPathStringSchema } from "../localPath.js";
+import {
+  absoluteLocalPathStringSchema,
+  localPathStringSchema,
+} from "../localPath.js";
 import { androidManifestComponentsSchema } from "./androidManifestComponents.js";
 import {
   androidViewRequestSchema,
   validateAndroidPackageDelivery,
 } from "./androidPackageQuery.js";
+import { androidMappingReportSchema } from "./androidMapping.js";
+import { dexDescriptorSchema } from "./dexTypes.js";
 
 const target = {
   path: localPathStringSchema.describe(
@@ -14,6 +19,13 @@ const target = {
 const classTarget = {
   ...target,
   class_name: z.string().min(1).describe("Exact fully qualified class name"),
+};
+const mappingPath = {
+  mapping_path: absoluteLocalPathStringSchema
+    .optional()
+    .describe(
+      "Absolute local R8/ProGuard mapping.txt; names are annotated, never replaced",
+    ),
 };
 
 /** Caller intent for static Android inspection, independent of its engine. */
@@ -25,9 +37,10 @@ export const androidInputSchemas = {
       .string()
       .describe("Case-sensitive class-name substring; empty lists all classes"),
   }),
-  inspect_android_class: z.strictObject(classTarget),
+  inspect_android_class: z.strictObject({ ...classTarget, ...mappingPath }),
   inspect_android_method: z.strictObject({
     ...classTarget,
+    ...mappingPath,
     method_name: z.string().min(1),
     overload_index: z
       .int()
@@ -105,12 +118,6 @@ const textCoverage = z.strictObject({
   reported_total_bytes: z.int().nonnegative().nullable(),
 });
 
-/** A DEX prototype; hex parentheses also keep the advertised class valid in v mode. */
-export const dexDescriptorSchema = z
-  .string()
-  .regex(
-    /^\((?:\[*(?:[ZBSCIJFD]|L[^;\x28\x29]+;))*\)(?:V|\[*(?:[ZBSCIJFD]|L[^;\x28\x29]+;))$/u,
-  );
 
 const integral = <Type extends string>(type: Type, min: number, max: number) =>
   z.strictObject({
@@ -224,6 +231,7 @@ export const androidResultSchemas = {
       }),
     ),
     inner_classes: z.array(z.string()),
+    mapping: androidMappingReportSchema.exactOptional(),
   }),
   inspect_android_method: z.strictObject({
     ...common,
@@ -235,6 +243,7 @@ export const androidResultSchemas = {
     fell_back: z.boolean(),
     markers: z.array(z.string()),
     source: textCoverage,
+    mapping: androidMappingReportSchema.exactOptional(),
   }),
   trace_android_references: z.strictObject({
     ...common,
