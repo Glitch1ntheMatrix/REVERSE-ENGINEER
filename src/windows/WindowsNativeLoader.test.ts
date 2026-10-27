@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
+import { windowsNativeArtifactFixture } from "../../tests/fixtures/windowsNativeArtifact.js";
 import { inspectWindowsNativeReadiness } from "../process/WindowsAuthority.js";
 import {
   loadWindowsNativeAuthority,
@@ -18,22 +19,7 @@ const fixture = (
   } = {},
   architecture: keyof typeof machines = "x64",
 ) => {
-  const bytes = Buffer.alloc(152);
-  bytes.write("MZ");
-  bytes.writeUInt32LE(64, 0x3c);
-  bytes.write("PE\0\0", 64, "ascii");
-  bytes.writeUInt16LE(machines[architecture], 68);
-  bytes.writeUInt16LE(64, 84);
-  bytes.writeUInt16LE(0x20b, 88);
-  const manifest = {
-    packageVersion: "1.0.0",
-    platform: "win32",
-    architecture,
-    abiVersion: 1,
-    nodeApiVersion: 8,
-    artifact: `rea-windows-${architecture}.node`,
-    artifactSha256: createHash("sha256").update(bytes).digest("hex"),
-  };
+  const { bytes, manifest } = windowsNativeArtifactFixture();
   const identity = {
     requestedPath: "D:\\fixture\\runtime",
     finalPath: "\\\\?\\D:\\fixture\\runtime",
