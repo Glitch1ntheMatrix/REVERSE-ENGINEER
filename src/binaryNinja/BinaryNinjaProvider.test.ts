@@ -6,7 +6,7 @@ import { parseConfig } from "../config/parseConfig.js";
 import type { BinaryTarget } from "../domain/binaryTargetTypes.js";
 import { readBinaryNinjaConfiguration } from "./BinaryNinjaConfiguration.js";
 import { BinaryNinjaProvider } from "./BinaryNinjaProvider.js";
-import { ProviderInspectionScope } from "../providers/ProviderInspectionScope.js";
+import { ProviderInspectionScope } from "../application/ProviderInspectionScope.js";
 import {
   createBinaryNinjaTarget,
   RecordingBinaryNinjaMcp,

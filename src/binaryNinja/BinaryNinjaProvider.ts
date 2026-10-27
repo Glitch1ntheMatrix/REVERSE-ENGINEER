@@ -1,3 +1,4 @@
+import { bindArtifactFileCleanup } from "../artifacts/ArtifactFileOperation.js";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import canonicalize from "canonicalize";
@@ -35,16 +36,10 @@ import {
   binaryNinjaCapabilities,
 } from "./BinaryNinjaProviderCapabilities.js";
 import { BinaryNinjaSessionClient } from "./BinaryNinjaSessionClient.js";
-import {
-  ArtifactResourceScope,
-  ArtifactResourceRetryFailure,
-} from "../artifacts/ArtifactResourceScope.js";
-import {
-  AnalysisCleanupLease,
-  AnalysisCleanupLeaseGroup,
-} from "../artifacts/AnalysisCleanupLease.js";
+import { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
+import { AnalysisCleanupLease } from "../artifacts/AnalysisCleanupLease.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
-import type { ProviderInspectionScope } from "../providers/ProviderInspectionScope.js";
+import type { ProviderInspectionScope } from "../application/ProviderInspectionScope.js";
 
 /** Bring-your-own Binary Ninja GUI MCP candidate; discovery performs no connection. */
 export class BinaryNinjaProvider implements AnalysisProviderCandidate {
@@ -93,8 +88,7 @@ export class BinaryNinjaProvider implements AnalysisProviderCandidate {
         { cause: cause instanceof Error ? cause.message : String(cause) },
         { cause, operation: "close_owned_resources" },
       );
-      if (cause instanceof ArtifactResourceRetryFailure)
-        new AnalysisCleanupLeaseGroup(failure, cause.cleanupLeases);
+      bindArtifactFileCleanup(cause, failure);
       return err(failure);
     }
   }
