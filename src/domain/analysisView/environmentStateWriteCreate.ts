@@ -24,6 +24,7 @@ import {
   isOpaqueToken,
   nextMadeCount,
   restampedFields,
+  stampedBy,
 } from "./environmentStateWriteStamps.js";
 import {
   anyLinkedSource,
@@ -94,7 +95,6 @@ import {
   isUuid,
   likeGeneratedInteger,
   nextSequence,
-  readClock,
   startedSequence,
   sequenceNumber,
   spelledLike,
@@ -539,9 +539,17 @@ const agreesLater = (
   context: EffectContext,
   draft: WriteDraft,
   created: Pick<StateEntity, "type" | "collection" | "fields">,
-  call: { readonly body: JsonObject; readonly observed: JsonObject },
+  call: {
+    readonly body: JsonObject;
+    readonly observed: JsonObject;
+    readonly startMs: number | undefined;
+  },
 ): boolean =>
-  followsCreateRules(context, draft, { ...created, observed: call.observed }) &&
+  followsCreateRules(context, draft, {
+    ...created,
+    observed: call.observed,
+    startMs: call.startMs,
+  }) &&
   !contradictsDefault(draft.plan.rules, call, created.fields) &&
   !unruledDiffers(draft.plan.rules, call.observed, {
     written: created.fields,
@@ -588,6 +596,7 @@ const followsCreateRules = (
   draft: WriteDraft,
   created: Pick<StateEntity, "type" | "collection" | "fields"> & {
     readonly observed: JsonObject;
+    readonly startMs: number | undefined;
   },
 ): boolean =>
   draft.plan.rules.every((rule) => {
@@ -636,6 +645,7 @@ const followsMadeObjects = (
   draft: WriteDraft,
   created: Pick<StateEntity, "type" | "collection" | "fields"> & {
     readonly observed: JsonObject;
+    readonly startMs: number | undefined;
   },
 ): boolean =>
   draft.plan.rules.every((rule) => {
@@ -656,7 +666,8 @@ const followsMadeObjects = (
     return [...new Set([...Object.keys(exemplar), ...Object.keys(made)])].every(
       (member) => {
         const value = ownMember(made, member);
-        if (rule.clocks.includes(member)) return readClock(value) !== undefined;
+        if (rule.clocks.includes(member))
+          return stampedBy(value, rule.format, created.startMs);
         if (rule.own.includes(member)) return scalarText(value) === id;
         const count = rule.counts.find((entry) => entry.member === member);
         if (count === undefined)
@@ -937,7 +948,11 @@ export const applyCreate = (
         context,
         draft,
         { type, collection, fields: fields.value },
-        { body: call.body, observed: observed.object },
+        {
+          body: call.body,
+          observed: observed.object,
+          startMs: startOf(context, step),
+        },
       ))
   ) {
     refuse(draft, step, "unexplained-change");

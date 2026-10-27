@@ -10,6 +10,7 @@ import {
   MISLINKED_TASK_ROWS,
   ONE_TASK_ROWS,
   RESPELLED_TASK_ROWS,
+  STALE_MADE_TASK_ROWS,
   UNCLOCKED_TASK_ROWS,
 } from "../../../tests/fixtures/environmentStateMadeValues.js";
 import { environmentStateViewOf } from "../../../tests/fixtures/environmentStateWrites.js";
@@ -93,6 +94,13 @@ describe("values an application counts and makes with each created entity", () =
     const plan = createOf(RESPELLED_TASK_ROWS);
     expect(plan).toMatchObject({ served: false, reason: "unexplained-change" });
     expect(ruleFor(plan, "identifier")).toBeUndefined();
+  });
+
+  it("withholds the creates when a later made object holds a clock its request did not stamp", () => {
+    expect(createOf(STALE_MADE_TASK_ROWS)).toMatchObject({
+      served: false,
+      reason: "unexplained-change",
+    });
   });
 
   it("makes no object rule without a clock the request stamped", () => {
