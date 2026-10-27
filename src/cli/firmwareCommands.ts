@@ -1,3 +1,4 @@
+import { projectCliAnalysisResult } from "./projectCliAnalysisResult.js";
 import { z } from "incur";
 import { FirmwareAnalysisService } from "../application/firmware/FirmwareAnalysisService.js";
 import { createFirmwareAnalysisProvider } from "../composition/firmware.js";
@@ -35,7 +36,8 @@ export const registerFirmwareCommands = (
           service,
           operation === "inspect_firmware_regions" ? "binwalk" : "unblob",
           operation,
-        ),
+          signal,
+        ).then(projectCliAnalysisResult),
       ),
     );
   const path = localPathStringSchema.describe(
@@ -45,12 +47,18 @@ export const registerFirmwareCommands = (
     description:
       "Inspect firmware signature candidates without extracting them",
     args: z.object({ path }),
-    run: ({ args }) =>
+    options: z.object({ analysisTimeoutMs: extractInput.analysis_timeout_ms }),
+    run: ({ args, options }) =>
       execute(
         CLI_COMMANDS.inspectFirmwareRegions,
         "inspect_firmware_regions",
         // CLI paths are operator-relative; resolve before shared validation.
-        { path: absoluteCallerPath(args.path) },
+        {
+          path: absoluteCallerPath(args.path),
+          ...(options.analysisTimeoutMs === undefined
+            ? {}
+            : { analysis_timeout_ms: options.analysisTimeoutMs }),
+        },
       ),
   });
   cli.command(CLI_COMMANDS.extractFirmware, {
@@ -72,6 +80,8 @@ export const registerFirmwareCommands = (
       maxDepth: extractInput.max_depth,
       maxOutputBytes: extractInput.max_output_bytes,
       maxOutputFiles: extractInput.max_output_files,
+      publicationTimeoutMs: extractInput.publication_timeout_ms,
+      analysisTimeoutMs: extractInput.analysis_timeout_ms,
     }),
     run: ({ args, options }) =>
       execute(CLI_COMMANDS.extractFirmware, "extract_firmware", {
@@ -83,6 +93,10 @@ export const registerFirmwareCommands = (
         max_depth: options.maxDepth,
         max_output_bytes: options.maxOutputBytes,
         max_output_files: options.maxOutputFiles,
+        publication_timeout_ms: options.publicationTimeoutMs,
+        ...(options.analysisTimeoutMs === undefined
+          ? {}
+          : { analysis_timeout_ms: options.analysisTimeoutMs }),
       }),
   });
 };

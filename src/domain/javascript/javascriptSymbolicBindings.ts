@@ -1,11 +1,17 @@
 import * as t from "@babel/types";
 import {
+  staticObjectPropertyReader,
+  readExactJavaScriptLiteral,
+  isObjectPrototypeSetter,
+  objectDataPropertyValue,
   semanticStaticPropertyKey,
   semanticWriteSiteTarget,
   semanticWriteTargets,
   runtimeFunctionParameters,
   unwrapJavaScriptExpression,
 } from "./javascriptAstValues.js";
+import { createSemanticExpressionShapeResolver } from "./javascriptSemanticExpressionShapes.js";
+import { createGlobalReferenceReader } from "./javascriptSemanticAmbientWrites.js";
 import { javascriptBootstrapAt } from "./javascriptBootstrap.js";
 import { ELECTRON_MODULE } from "./javascriptElectronMemberWrites.js";
 import {
@@ -60,14 +66,6 @@ interface SymbolicReadBoundary {
 type SymbolicNamespace = Extract<SymbolicValue, { kind: "namespace" }>;
 
 const emptyEnvironment: SymbolicEnvironment = { values: new Map() };
-const isObjectPrototypeSetter = (
-  property: t.ObjectMethod | t.ObjectProperty,
-  name: string,
-): boolean =>
-  t.isObjectProperty(property) &&
-  !property.computed &&
-  !property.shorthand &&
-  name === "__proto__";
 
 const containsOwnedReturn = (root: t.Node): boolean => {
   let found = false;
@@ -111,6 +109,7 @@ export class JavaScriptSymbolicBindings {
   readonly #mutated = new Set<string>();
   readonly #electronIdentity: JavaScriptElectronIdentity;
   readonly #namespaceOwners = new Map<string, t.Function>();
+  readonly #moduleFactories = new WeakSet<t.Function>();
   readonly #unsafeExports = new Set<string>();
   readonly #aliasesByBinding = new Map<string, string[]>();
   readonly #bootstrapTables: Array<{
@@ -130,6 +129,11 @@ export class JavaScriptSymbolicBindings {
     ),
   ) {
     this.#electronIdentity = electronIdentity;
+    const shapes = createSemanticExpressionShapeResolver(state);
+    const defineProperty = createGlobalReferenceReader(state, [
+      "Object",
+      "defineProperty",
+    ]);
     this.#indexBindingAliases();
     traverseJavaScriptAst(program, {
       enter: (node) => {
@@ -140,35 +144,60 @@ export class JavaScriptSymbolicBindings {
       enter: (node) => {
         const target = semanticWriteSiteTarget(node);
         if (target !== null) this.#indexWriteSite(target, node);
-        if (
-          t.isCallExpression(node) &&
-          t.isMemberExpression(node.callee) &&
-          t.isIdentifier(node.callee.object, { name: "Object" }) &&
-          !resolveSemanticBindingState(state, node.callee.object, "Object") &&
-          semanticStaticPropertyKey(
-            node.callee.property,
-            node.callee.computed,
-          ) === "defineProperty"
-        ) {
+        if (t.isCallExpression(node) && t.isMemberExpression(node.callee)) {
+          const intrinsic = defineProperty(node.callee);
+          if (intrinsic.status === "unrelated") return;
           const [target, key, descriptor] = node.arguments;
           if (
             t.isIdentifier(target) &&
             t.isStringLiteral(key) &&
-            t.isObjectExpression(descriptor)
+            descriptor !== undefined
           ) {
-            const value = descriptor.properties.find(
-              (p) =>
-                t.isObjectProperty(p) &&
-                semanticStaticPropertyKey(p.key, p.computed) === "value",
+            if (intrinsic.status !== "unmodified") {
+              const replacement =
+                intrinsic.status === "replacement"
+                  ? unwrapJavaScriptExpression(intrinsic.value).node
+                  : undefined;
+              const unchanged =
+                (t.isFunctionExpression(replacement) ||
+                  t.isArrowFunctionExpression(replacement)) &&
+                (t.isBlockStatement(replacement.body)
+                  ? replacement.body.body.length === 0
+                  : readExactJavaScriptLiteral(replacement.body).found) &&
+                runtimeFunctionParameters(replacement).every(
+                  (parameter) =>
+                    t.isIdentifier(parameter) ||
+                    (t.isRestElement(parameter) &&
+                      t.isIdentifier(parameter.argument)),
+                );
+              if (!unchanged) this.#addWrite(target, [key.value], node, node);
+              return;
+            }
+            const properties = staticObjectPropertyReader(
+              unwrapJavaScriptExpression(descriptor).node,
+              shapes.isNullish,
             );
-            if (t.isObjectProperty(value))
+            const value = properties("value");
+            const hasAccessor =
+              properties("get").status !== "missing" ||
+              properties("set").status !== "missing";
+            if (value.status === "explicit" && !hasAccessor)
               this.#addWrite(target, [key.value], value.value, node);
+            else if (value.status !== "missing" || hasAccessor)
+              // Unknown values, accessor replacements and invalid mixed
+              // descriptors cannot preserve an earlier data export.
+              this.#addWrite(target, [key.value], node, node);
           }
         }
       },
     });
     for (const table of this.#bootstrapTables)
       this.#invalidateBootstrapTable(table.tableAliases, table.modules);
+  }
+
+  /** Whether a function is a recognized bundle module factory, which runs once per module load. */
+  isModuleFactory(node: t.Node): boolean {
+    return t.isFunction(node) && this.#moduleFactories.has(node);
   }
 
   environmentAt(node: t.Node): SymbolicEnvironment {
@@ -312,8 +341,18 @@ export class JavaScriptSymbolicBindings {
       }
       return { kind: "external", path };
     }
-    if (value.kind === "record")
-      return value.values.get(key) ?? symbolicUnknown("missing property");
+    if (value.kind === "record") {
+      const property = value.values.get(key);
+      if (
+        key === "exports" &&
+        property?.kind === "namespace" &&
+        this.#namespaceOwners.has(property.bindingId)
+      ) {
+        // Preserve namespace identity for members, not a known runtime value.
+        return { ...property, runtimeValueUnknown: true };
+      }
+      return property ?? symbolicUnknown("missing property");
+    }
     if (value.kind === "namespace") {
       if (
         this.#mutated.has(value.bindingId) ||
@@ -371,7 +410,7 @@ export class JavaScriptSymbolicBindings {
               (candidate): candidate is t.ObjectMethod | t.ObjectProperty =>
                 !t.isSpreadElement(candidate),
             )
-            .find((candidate) => isObjectPrototypeSetter(candidate, key));
+            .find((candidate) => isObjectPrototypeSetter(candidate));
           if (prototypeSetter !== undefined)
             return this.#objectPropertyValue(
               prototypeSetter,
@@ -415,12 +454,10 @@ export class JavaScriptSymbolicBindings {
     property: t.ObjectMethod | t.ObjectProperty,
     environment: SymbolicEnvironment,
   ): SymbolicValue {
-    return t.isObjectMethod(property) && property.kind !== "method"
+    const value = objectDataPropertyValue(property);
+    return value === undefined
       ? symbolicUnknown("accessor property")
-      : this.evaluate(
-          t.isObjectProperty(property) ? property.value : property,
-          environment,
-        );
+      : this.evaluate(value, environment);
   }
 
   members(
@@ -583,7 +620,26 @@ export class JavaScriptSymbolicBindings {
     }
     if (t.isSequenceExpression(node))
       return this.evaluate(node.expressions.at(-1), env);
-    if (t.isAssignmentExpression(node)) return this.evaluate(node.right, env);
+    if (t.isAssignmentExpression(node)) {
+      if (node.operator === "=") return this.evaluate(node.right, env);
+      if (
+        node.operator === "&&=" ||
+        node.operator === "||=" ||
+        node.operator === "??="
+      )
+        return this.#logicalValue(
+          node.operator === "&&="
+            ? "&&"
+            : node.operator === "||="
+              ? "||"
+              : "??",
+          node.left,
+          node.right,
+          env,
+          true,
+        );
+      return symbolicUnknown("compound assignment result");
+    }
     if (t.isAwaitExpression(node))
       return this.#awaited(this.evaluate(node.argument, env));
     if (t.isUnaryExpression(node)) {
@@ -609,37 +665,57 @@ export class JavaScriptSymbolicBindings {
           ])
         : this.evaluate(truth ? node.consequent : node.alternate, env);
     }
-    if (t.isLogicalExpression(node)) {
-      const left = this.evaluate(node.left, env);
-      const right = symbolicLogicalRight(node.operator, left);
-      if (right !== undefined)
-        return right ? this.evaluate(node.right, env) : left;
-      const leftCondition: SymbolicCondition = {
-        node: node.left,
-        positive:
-          node.operator === "&&"
-            ? false
-            : node.operator === "||"
-              ? true
-              : "not-nullish",
-      };
-      const rightCondition: SymbolicCondition = {
-        node: node.left,
-        positive:
-          node.operator === "&&"
-            ? true
-            : node.operator === "||"
-              ? false
-              : "nullish",
-      };
-      return symbolicUnion([
-        symbolicCondition(left, leftCondition),
-        symbolicCondition(this.evaluate(node.right, env), rightCondition),
-      ]);
-    }
+    if (t.isLogicalExpression(node))
+      return this.#logicalValue(node.operator, node.left, node.right, env);
     if (t.isCallExpression(node) || t.isOptionalCallExpression(node))
       return this.#call(node, env);
     return symbolicUnknown(`unsupported ${node.type}`);
+  }
+
+  #logicalValue(
+    operator: t.LogicalExpression["operator"],
+    leftNode: t.Node,
+    rightNode: t.Node,
+    env: SymbolicEnvironment,
+    assignment = false,
+  ): SymbolicValue {
+    const value = this.evaluate(leftNode, env);
+    let left = value;
+    if (assignment) {
+      // A mutable namespace supplies member identity, not a callable root value.
+      // Assignment results must not resolve their own write through that identity.
+      const alternatives = symbolicUnion(
+        symbolicVariants(value).map((variant) =>
+          variant.kind === "namespace" && variant.runtimeValueUnknown
+            ? this.#withConditions(
+                symbolicUnknown("mutable module exports value"),
+                variant,
+              )
+            : variant,
+        ),
+      );
+      left =
+        value.kind === "union"
+          ? this.#withConditions(alternatives, value)
+          : alternatives;
+    }
+    const right = symbolicLogicalRight(operator, left);
+    if (right !== undefined)
+      return right ? this.evaluate(rightNode, env) : left;
+    const leftCondition: SymbolicCondition = {
+      node: leftNode,
+      positive:
+        operator === "&&" ? false : operator === "||" ? true : "not-nullish",
+    };
+    const rightCondition: SymbolicCondition = {
+      node: leftNode,
+      positive:
+        operator === "&&" ? true : operator === "||" ? false : "nullish",
+    };
+    return symbolicUnion([
+      symbolicCondition(left, leftCondition),
+      symbolicCondition(this.evaluate(rightNode, env), rightCondition),
+    ]);
   }
 
   #identifier(node: t.Identifier, env: SymbolicEnvironment): SymbolicValue {
@@ -1264,6 +1340,7 @@ export class JavaScriptSymbolicBindings {
     for (const property of bootstrap.table.properties) {
       const factory = moduleFactory(property);
       if (!factory) continue;
+      this.#moduleFactories.add(factory);
       const moduleKey = modulePropertyName(property);
       const values = new Map<string, SymbolicValue>();
       const environment: SymbolicEnvironment = {
@@ -1358,11 +1435,9 @@ export class JavaScriptSymbolicBindings {
       !t.isForOfStatement(site) &&
       !t.isForInStatement(site)
     ) {
-      this.#indexWrite(
-        direct,
-        t.isAssignmentExpression(site) ? site.right : site,
-        site,
-      );
+      // Retain the operator so stored writes use the same result semantics as
+      // inline assignments, rather than treating every write as its RHS.
+      this.#indexWrite(direct, site, site);
       return;
     }
     for (const leaf of semanticWriteTargets(target))

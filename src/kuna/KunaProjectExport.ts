@@ -1,3 +1,9 @@
+import type { RegularFileState } from "../filesystem/RegularFile.js";
+import { createHash } from "node:crypto";
+import {
+  assertKunaProjectState,
+  type KunaProjectFileStates,
+} from "./KunaProjectState.js";
 import { createReadStream } from "node:fs";
 import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
@@ -10,9 +16,14 @@ import {
 import { ProviderAdapterError } from "../domain/providerAdapterError.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import { err, ok, type Result } from "../domain/result.js";
-import { hashStableFile } from "../filesystem/StableFileHash.js";
+import {
+  hashStableFile,
+  observeStableFile,
+  StableFileHashFailure,
+} from "../filesystem/StableFileHash.js";
 import type { OwnedFileHandle } from "../filesystem/OwnedFileHandle.js";
 import { prepareProcessOwnershipInspection } from "../process/ProcessOwnershipObservation.js";
+import { assertArtifactCommandPath } from "../process/ArtifactCommandPath.js";
 import type { ProviderProcessSupervisor } from "../process/ProviderProcess.js";
 import {
   copyAndHash,
@@ -21,6 +32,7 @@ import {
   runKunaCommand,
   type KunaProcessLauncher,
 } from "./KunaCommand.js";
+import { kunaProjectDeadline } from "./KunaConfiguration.js";
 import type { KunaInstallation } from "./KunaInstallation.js";
 import { KUNA_DIAGNOSTIC_BYTES } from "./KunaLimits.js";
 import {
@@ -32,12 +44,27 @@ import {
   type KunaProjectFunction,
 } from "./KunaProjectFiles.js";
 import { KUNA_PROVIDER_ID } from "./KunaRelease.js";
-import { RegularFileCleanupFailure } from "../filesystem/OwnedRegularFile.js";
+import {
+  RegularFileCleanupFailure,
+  regularFileCancellation,
+} from "../filesystem/OwnedRegularFile.js";
 
 /** Operation name every export and cache failure reports. */
 export const KUNA_EXPORT_OPERATION = "kuna:decompile-project";
 
 const INVENTORY_FILE = "functions.json";
+
+/** Exact flat file layout emitted for the selected target's native basename. */
+export const kunaExportFileNames = (targetPath: string) => {
+  const stem = basename(targetPath);
+  return {
+    c: `${stem}.c`,
+    h: `${stem}.h`,
+    asm: `${stem}.asm`,
+    readme: "README.md",
+    inventory: INVENTORY_FILE,
+  } as const;
+};
 
 /** Identity of one file an export consists of. */
 export interface KunaExportFile {
@@ -57,6 +84,7 @@ export interface KunaExportFiles {
 
 /** One validated export: its files, Kuna's counts and the facts parsed from them. */
 export interface KunaExport {
+  readonly fileStates: KunaProjectFileStates;
   readonly files: KunaExportFiles;
   readonly summary: KunaExportSummary;
   /** Decompiled function blocks in `.c` order. */
@@ -125,10 +153,15 @@ export const kunaExportFailure = (
   signal: AbortSignal | undefined,
 ): AnalysisError => {
   if (cause instanceof RegularFileCleanupFailure)
-    return kunaFileCleanupError(cause, KUNA_EXPORT_OPERATION, signal);
-  if (signal?.aborted === true)
-    return new AnalysisCancelledError(KUNA_EXPORT_OPERATION, { cause });
+    return kunaFileCleanupError(cause, KUNA_EXPORT_OPERATION);
+  const cancellation = regularFileCancellation(cause);
+  if (cancellation !== undefined)
+    return new AnalysisCancelledError(KUNA_EXPORT_OPERATION, {
+      cause: cancellation.reason,
+    });
   if (cause instanceof AnalysisError) return cause;
+  if (!(cause instanceof StableFileHashFailure) && signal?.aborted === true)
+    return new AnalysisCancelledError(KUNA_EXPORT_OPERATION, { cause });
   return new ProviderAdapterError(KUNA_PROVIDER_ID, KUNA_EXPORT_OPERATION, {
     cause,
     userMessage: `Kuna project cache failed: ${message(cause)}`,
@@ -150,10 +183,14 @@ const verifyKunaExecutable = async (
   signal: AbortSignal,
   retainFailedFileClose: KunaExportRequest["retainFailedFileClose"],
 ): Promise<Result<null, ProviderAdapterError>> => {
-  const executable = await hashStableFile(installation.executable, {
+  const invocationPath = installation.configuration.command;
+  await assertArtifactCommandPath(
+    { invocationPath, resolvedPath: installation.executable },
+    KUNA_EXPORT_OPERATION,
+  );
+  const executable = await hashStableFile(invocationPath, {
     signal,
-    retainFailedClose: (owner) =>
-      retainFailedFileClose(owner, installation.executable),
+    retainFailedClose: (owner) => retainFailedFileClose(owner, invocationPath),
   });
   if (executable.sha256 === installation.sha256) return ok(null);
   return err(
@@ -203,7 +240,7 @@ export const exportKunaProject = async (
       workspace: request.workspace,
       operation: KUNA_EXPORT_OPERATION,
       timeoutMs: deadline - Date.now(),
-      reportedTimeoutMs: configuration.projectTimeoutMs,
+      deadline: kunaProjectDeadline(configuration),
       outputBytes,
       signal,
       launcher: request.launcher,
@@ -267,15 +304,11 @@ export const exportKunaProject = async (
     return unusable(
       "Kuna did not print its `functions: N ok, M failed` summary.",
     );
-  const stem = basename(request.targetPath);
-  const names = {
-    c: `${stem}.c`,
-    h: `${stem}.h`,
-    asm: `${stem}.asm`,
-    readme: "README.md",
-    inventory: INVENTORY_FILE,
-  } as const;
+  const names = kunaExportFileNames(request.targetPath);
   const files: Partial<Record<keyof KunaExportFiles, KunaExportFile>> = {};
+  const fileStates: Partial<
+    Record<keyof KunaProjectFileStates, RegularFileState>
+  > = {};
   for (const [role, name] of Object.entries(names) as [
     keyof KunaExportFiles,
     string,
@@ -287,16 +320,25 @@ export const exportKunaProject = async (
     });
     if (status === undefined || !status.isFile())
       return unusable(`Kuna's export has no regular ${name}.`);
+    const observed = await observeStableFile(path, {
+      signal,
+      retainFailedClose: (owner) => request.retainFailedFileClose(owner, path),
+    });
     files[role] = {
       path: name,
-      ...(await hashStableFile(path, {
-        signal,
-        retainFailedClose: (owner) =>
-          request.retainFailedFileClose(owner, path),
-      })),
+      sha256: observed.sha256,
+      bytes: observed.bytes,
     };
+    fileStates[role] = observed.state;
   }
   const complete = files as KunaExportFiles;
+  const states = fileStates as KunaProjectFileStates;
+  if (
+    complete.inventory.sha256 !==
+    createHash("sha256").update(listed.snapshot.stdout.text).digest("hex")
+  )
+    return unusable("the retained inventory changed before export sealing");
+  await assertKunaProjectState(request.output, complete, states, signal);
   const functions = await readKunaExportSource(
     request.output,
     complete.c,
@@ -304,6 +346,7 @@ export const exportKunaProject = async (
     signal,
   );
   if (!functions.ok) return unusable(functions.error);
+  await assertKunaProjectState(request.output, complete, states, signal);
   const identity = await verifyKunaExecutable(
     installation,
     signal,
@@ -316,6 +359,7 @@ export const exportKunaProject = async (
     kind: "done",
     result: ok({
       files: complete,
+      fileStates: states,
       summary,
       functions: functions.value,
       inventory: inventory.value,
@@ -343,6 +387,7 @@ export const readKunaExport = async (
   directory: string,
   files: KunaExportFiles,
   summary: KunaExportSummary,
+  fileStates: KunaProjectFileStates,
   signal?: AbortSignal,
 ): Promise<
   Result<
@@ -353,6 +398,7 @@ export const readKunaExport = async (
     string
   >
 > => {
+  await assertKunaProjectState(directory, files, fileStates, signal);
   const functions = await readKunaExportSource(
     directory,
     files.c,
@@ -367,5 +413,6 @@ export const readKunaExport = async (
     }),
   );
   if (!inventory.ok) return inventory;
+  await assertKunaProjectState(directory, files, fileStates, signal);
   return ok({ functions: functions.value, inventory: inventory.value });
 };

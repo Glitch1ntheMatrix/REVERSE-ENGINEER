@@ -6,7 +6,7 @@ import { hopperOperationStage } from "./HopperOperationStage.js";
 import type { HopperBridgeEvent } from "./protocol.js";
 import type { AnalysisResourceConstraintError } from "../domain/analysisErrorCore.js";
 import {
-  HopperCancelledError,
+  hopperCancelledBySignal,
   type HopperError,
   HopperProcessError,
   HopperProtocolError,
@@ -80,7 +80,7 @@ export class HopperRequestQueue {
     options: HopperRequestQueueOptions,
   ): Promise<HopperRequestResult> {
     if (options.signal?.aborted === true)
-      return Promise.resolve(err(new HopperCancelledError()));
+      return Promise.resolve(err(hopperCancelledBySignal(options.signal)));
     const timeoutMs = options.timeoutMs;
     if (
       timeoutMs !== undefined &&
@@ -242,7 +242,11 @@ export class HopperRequestQueue {
       return;
     }
     if (entry.signal?.aborted === true) {
-      this.#settleCaller(entry, err(new HopperCancelledError()), "cancelled");
+      this.#settleCaller(
+        entry,
+        err(hopperCancelledBySignal(entry.signal)),
+        "cancelled",
+      );
       this.#drain();
       return;
     }
@@ -271,7 +275,11 @@ export class HopperRequestQueue {
     try {
       entry.transmitted = true;
       this.send(
-        { id: entry.id, method: entry.method, params: entry.params },
+        {
+          id: entry.id,
+          method: entry.method,
+          params: entry.params,
+        },
         () =>
           this.accept(
             entry.id,
@@ -319,7 +327,7 @@ export class HopperRequestQueue {
 
   #cancel(
     entry: QueuedRequest,
-    error: HopperError = new HopperCancelledError(),
+    error: HopperError = hopperCancelledBySignal(entry.signal),
   ): void {
     if (entry.callerSettled) return;
     if (this.#active === entry) {
