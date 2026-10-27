@@ -325,7 +325,7 @@ export const createCliResultOutput = (
       !options.tokenCount
     )
       return false;
-if (format === "csv" || format === "tsv") {
+    if (format === "csv" || format === "tsv") {
       const meta = {
         command: metadata.command,
         duration: metadata.duration,
