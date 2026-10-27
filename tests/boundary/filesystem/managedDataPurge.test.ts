@@ -93,28 +93,22 @@ it("retains an arbitrary caller-selected Kuna cache and refuses a linked managed
 it.each([
   {
     label: "trailing separator",
-    platform: "darwin" as const,
     spelling: (cache: string) => `${cache}/`,
   },
   {
     label: "dot segment",
-    platform: "darwin" as const,
     spelling: (cache: string) => `${cache}/.`,
   },
   {
     label: "duplicate separator",
-    platform: "darwin" as const,
     spelling: (cache: string) =>
       `${cache.slice(0, cache.lastIndexOf("kuna"))}/${"kuna"}`,
   },
 ])(
   "purges a default Kuna cache selected with a $label",
-  async ({ platform, spelling }) => {
+  async ({ spelling }) => {
     const home = await createTestTempDirectory("rea-managed-cache-spelling-");
-    const root = join(
-      home,
-      platform === "darwin" ? "Library/Caches" : "xdg-cache",
-    );
+    const root = join(home, "Library/Caches");
     const cache = join(root, "rea", "kuna");
     await mkdir(cache, { recursive: true });
     await writeFile(join(cache, "cached"), "REA cache");
@@ -122,10 +116,9 @@ it.each([
       home,
       undefined,
       {
-        ...(platform === "linux" ? { XDG_CACHE_HOME: root } : {}),
         REA_KUNA_CACHE_DIR: spelling(cache),
       },
-      platform,
+      "darwin",
     );
     try {
       const result = await host.purgeData();
