@@ -84,6 +84,13 @@ For an existing configuration, setup and uninstall recovery refuse a detected
 replacement or edit and name the recovery backup. Quit clients before editing their configuration;
 these checks do not lock out another writer modifying the same file in place,
 or exclude pathname changes between the final check and publication.
+Setup refreshes an existing `rea` registration only when its launcher proves REA
+ownership. Foreign or unresolved launcher identity blocks setup before any
+backup or write, including an OpenCode legacy entry that migration would remove.
+Review the existing launcher and manually rename or remove that registration to
+approve replacing it. A different existing installation path is foreign to the
+current entrypoint; a path that cannot be resolved remains unknown. Cordis uses
+its stable REA entry ID instead of launcher identity.
 Setup also retains valid environment overrides in REA's existing server entry,
 such as `REA_MCP_INPUT_SCHEMA_PROFILE`, `REA_MCP_OUTPUT_SCHEMA_PROFILE`, and
 `REA_MCP_MAX_RESPONSE_BYTES`, and `REA_MCP_TOOL_FAMILIES`.
@@ -437,6 +444,9 @@ and other MCP servers. Purging removes REA's legacy cache and state under
 archives under `${XDG_CACHE_HOME:-~/.cache}/rea/hopper-releases`. Other cache
 namespaces remain intact. A caller-selected `REA_KUNA_CACHE_DIR` is retained
 and reported because REA cannot establish ownership of its entire contents.
+Lexically equivalent spellings of that default directory, including a trailing
+separator, a `.` segment, or a repeated separator, share its purge result.
+The comparison preserves POSIX `..` traversal and literal backslashes.
 A client configuration that is malformed, unreadable, or at an unsafe
 path stops the operation before anything is removed, and a client that fails
 while being updated stops the remaining removals. Uninstall reports each
@@ -1425,6 +1435,21 @@ environment requires restarting the server; reopening a target alone keeps the
 current setting. For Windows PE resource analysis, the exact name is
 `WindowsResourceReference`. Disabling an analyzer skips the facts it would have
 produced.
+
+Ghidra's Objective-C Message Analyzer can log
+`Required Objective-C data type not found in data type manager` /
+`Try adding libobjc.dylib` when a Mach-O links Objective-C runtime symbols but
+defines no class metadata (thin Cocoa glue in a C++ binary is a common case).
+That text is non-fatal Ghidra analyzer output: auto-analysis continues, and the
+analyzer simply skips `objc_msgSend` call-target recovery. REA's headless import
+does not accept a "add this library" option, and on modern macOS
+`/usr/lib/libobjc.A.dylib` exists only in the dyld shared cache, so there is no
+on-disk library to add. Treat the line as a coverage limitation, not an REA
+failure; check the session's `failure_kind` (and related provider errors) for
+any real abort. To silence that analyzer, set
+`REA_GHIDRA_DISABLED_ANALYZERS="Objective-C Message Analyzer"`. For large
+executables that miss the startup deadline instead, raise
+`REA_GHIDRA_STARTUP_TIMEOUT_MS` and the [Ghidra heap](#ghidra-heap-and-cpu-controls).
 
 ### Ghidra heap and CPU controls
 
