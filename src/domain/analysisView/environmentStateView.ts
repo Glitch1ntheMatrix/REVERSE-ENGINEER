@@ -396,7 +396,7 @@ const writePlanSchema = z.strictObject({
         })
         .exactOptional()
         .describe(
-          "A create's later read of the entity: an item read lends fields the response lacks and its clock spellings, a list read only adds fields the response lacks.",
+          "A write's later read of the entity: an item read lends a create fields the response lacks, and its clock spellings; a list read only adds fields the response lacks.",
         ),
     })
     .nullable()

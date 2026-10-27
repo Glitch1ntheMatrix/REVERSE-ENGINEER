@@ -57,6 +57,16 @@ plans, 386 served and 398. No write goes from served to withheld and every view 
 Vikunja's task update reads back confirmed, but stays withheld: the task creates before it are not modelled (per-project
 numbers), so their entities carry the creates' answer spellings into later reads.
 
+## Review round
+
+- Greptile's first review: a `sequence` with `sent` now accepts a value a later create sent, whichever create came
+  first; a default must agree with every update that left its member out, else the plan is withheld; and serving
+  stores an update's clocks as the update plan's read-back spells them (`observation.read`). Their four tests fail on
+  `6300ec80`. #7332's made-object clock check, merged in, has its test there.
+- Gates as above: `domain` + `services` 11,699 passed, 8 failed (main's `appleApplication.test.ts`); focused boundaries
+  80 passed; the five MCP schema files 54 passed. The census stays at 694 plans and 398 served, with no plan or view
+  changing.
+
 ## Not verified
 
 - No recording round ran with this branch, so its write tasks are not measured.

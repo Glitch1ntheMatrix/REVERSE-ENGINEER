@@ -324,6 +324,30 @@ export const appliedUpdate = (
   };
 };
 
+/** Whether defaults disagree with a call that left their member out: a remembered call, or this one, showed it otherwise. */
+export const defaultsDisagree = (
+  defaults: WriteBody["defaults"],
+  calls: {
+    readonly earlier: readonly UpdateCall[];
+    readonly sent?: JsonObject;
+    readonly after?: JsonObject;
+  },
+): boolean =>
+  (defaults ?? []).some(
+    ({ member, value }) =>
+      calls.earlier.some(
+        (call) =>
+          !call.sent.has(member) &&
+          call.shown.has(member) &&
+          !same(call.shown.get(member), observedValue(value)),
+      ) ||
+      (calls.sent !== undefined &&
+        calls.after !== undefined &&
+        !Object.hasOwn(calls.sent, member) &&
+        Object.hasOwn(calls.after, member) &&
+        !same(calls.after[member], value)),
+  );
+
 /** Keep what a modelled update call showed, which later calls' rules must reproduce, and the fields it found already set. */
 export const rememberCall = (
   retain: (bytes: number) => void,

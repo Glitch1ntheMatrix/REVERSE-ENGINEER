@@ -118,3 +118,55 @@ export const PUT_CLEARS_ROWS: readonly TimedCaptureRow[] = (() => {
     ["GET", "/api/tags", [triage, paid]],
   ];
 })();
+
+/** Bundle creates the other way round: the first leaves its order to the application, the second sends one. */
+export const NUMBERED_THEN_SENT_ROWS: readonly TimedCaptureRow[] = (() => {
+  const bundle = (id: number, name: string, order: number): Entity => ({
+    id,
+    name,
+    order,
+  });
+  const [alpha, bravo] = [bundle(1, "Alpha", 0), bundle(2, "Bravo", 1)];
+  const [charlie, delta] = [bundle(3, "Charlie", 2), bundle(4, "Delta", 9)];
+  return [
+    ["GET", "/api/bundles", [alpha, bravo]],
+    ["GET", "/api/bundles/1", alpha],
+    ["GET", "/api/bundles/2", bravo],
+    ["POST", "/api/bundles", charlie, 201, { name: "Charlie" }],
+    ["GET", "/api/bundles/3", charlie],
+    ["GET", "/api/bundles", [alpha, bravo, charlie]],
+    ["POST", "/api/bundles", delta, 201, { name: "Delta", order: 9 }],
+    ["GET", "/api/bundles/4", delta],
+    ["GET", "/api/bundles", [alpha, bravo, charlie, delta]],
+  ];
+})();
+
+/** Two name-only tag PUTs, one keeping the owner and one clearing it, in the given order. */
+const ownerPuts = (clearsFirst: boolean): readonly TimedCaptureRow[] => {
+  const tag = (id: number, name: string, owner: number | null): Entity => ({
+    id,
+    name,
+    owner,
+  });
+  const [inbox, bills] = [tag(1, "Inbox", 3), tag(2, "Bills", 3)];
+  const [triage, paid] = [
+    tag(1, "Triage", clearsFirst ? null : 3),
+    tag(2, "Paid", clearsFirst ? 3 : null),
+  ];
+  return [
+    ["GET", "/api/tags", [inbox, bills]],
+    ["GET", "/api/tags/1", inbox],
+    ["GET", "/api/tags/2", bills],
+    ["PUT", "/api/tags/1", triage, 200, { name: "Triage" }],
+    ["GET", "/api/tags/1", triage],
+    ["PUT", "/api/tags/2", paid, 200, { name: "Paid" }],
+    ["GET", "/api/tags/2", paid],
+    ["GET", "/api/tags", [triage, paid]],
+  ];
+};
+
+/** A name-only PUT that keeps the owner, then one that clears it. */
+export const KEPT_THEN_CLEARED_ROWS = ownerPuts(false);
+
+/** A name-only PUT that clears the owner, then one that keeps it. */
+export const CLEARED_THEN_KEPT_ROWS = ownerPuts(true);

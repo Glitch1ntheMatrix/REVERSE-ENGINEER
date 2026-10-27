@@ -6,6 +6,7 @@ import {
   isObject,
   locateItem,
   at,
+  same,
   type JsonObject,
   type ParsedRequestBody,
   requestJson,
@@ -34,6 +35,7 @@ import {
 import { otherFields } from "./environmentStateWriteGenerated.js";
 import {
   contradictsEarlierCalls,
+  defaultsDisagree,
   disagreesWithCall,
   keptFields,
   rememberCall,
@@ -45,9 +47,11 @@ import {
 } from "./environmentStateWriteCalls.js";
 import {
   laterObservation,
+  respelledInstant,
   shownBefore,
   viewFields,
   type Observed,
+  type ObservedRead,
 } from "./environmentStateWriteObserve.js";
 import { plannedBody, restampedFields } from "./environmentStateWriteStamps.js";
 import { readClock } from "./environmentStateWriteValues.js";
@@ -485,6 +489,37 @@ const outcomes = (
   return { targets, target, recorded };
 };
 
+/** The item read after an update that spells a clock the update stamped at a coarser precision, which serving stores it as. */
+const spelledReadBack = (
+  context: EffectContext,
+  step: WriteStep,
+  target: {
+    readonly type: string;
+    readonly idField: string;
+    readonly collection: string;
+    readonly id: string;
+  },
+  call: { readonly rules: readonly FieldRule[]; readonly after: JsonObject },
+): ObservedRead | undefined => {
+  const read = laterObservation(
+    searchFrom(context, step),
+    itemReads(context, target),
+  );
+  if (read === undefined || context.viewOf(read.ordinal)?.shape !== "item")
+    return undefined;
+  const respelled = call.rules.some((rule) => {
+    if (rule.rule !== "clock") return false;
+    const [own, shown] = [
+      ownMember(call.after, rule.field),
+      ownMember(read.object, rule.field),
+    ];
+    return !same(own, shown) && respelledInstant(own, shown);
+  });
+  return respelled
+    ? { ordinal: read.ordinal, pointer: read.pointer, shape: "item" }
+    : undefined;
+};
+
 /** Build an update plan from its exemplar, or add what a later call showed. */
 const buildUpdate = (
   context: EffectContext,
@@ -646,7 +681,14 @@ export const updateEntity = (
         entity.fields,
         after.object,
         explained,
-      ))
+      ) ||
+      // A member calls left out is cleared by every one or by none.
+      defaultsDisagree(explained.body.defaults, { earlier: draft.updates }) ||
+      defaultsDisagree(draft.plan.body?.defaults, {
+        earlier: [],
+        sent: body,
+        after: after.object,
+      }))
   ) {
     if (!unknown) refuse(draft, step, "unexplained-change");
     return recorded();
@@ -654,6 +696,21 @@ export const updateEntity = (
   draft.plan.rules = rules;
   noteFixedWidths(draft.fixedWidth, after.object);
   buildUpdate(context, draft, step, { after, explained, idField });
+  // Serving stores the clocks it stamps as the read after the update spells them.
+  const readBack = spelledReadBack(
+    context,
+    step,
+    { type, idField, collection, id },
+    { rules: explained.rules, after: after.object },
+  );
+  if (
+    readBack !== undefined &&
+    draft.plan.observation !== null &&
+    draft.plan.observation.read === undefined
+  )
+    Object.assign(draft.plan, {
+      observation: { ...draft.plan.observation, read: readBack },
+    });
   noteAmpersands(draft.ampersands, explained.rules, after.object);
   // Serving reads the plan's observation, so the gate does too; generated values are this call's.
   const written = updatedFields(

@@ -21,6 +21,7 @@ import {
   containsDelimited,
   isUuid,
   readClock,
+  formatClock,
   sequenceNumber,
   spelledLike,
   type ClockFormat,
@@ -245,6 +246,31 @@ export const createdNestedClock = (
     return ms >= startMs - TRUNCATION_MS && ms <= startMs + NESTED_WINDOW_MS;
   });
   return stamped ? nestedRule(field, value, members, evidence.type) : undefined;
+};
+
+/** An update's fields as its application stores them: each clock at the coarser precision its plan's read-back spelled it. */
+export const readSpelledClocks = (
+  rules: readonly FieldRule[],
+  written: JsonObject,
+  read: JsonObject | undefined,
+): JsonObject => {
+  if (read === undefined) return written;
+  const fields = { ...written };
+  for (const rule of rules) {
+    if (rule.rule !== "clock") continue;
+    const value = readClock(ownMember(written, rule.field));
+    const stored = readClock(ownMember(read, rule.field));
+    if (
+      value?.format.kind !== "iso" ||
+      stored?.format.kind !== "iso" ||
+      stored.format.fraction >= value.format.fraction ||
+      !same({ ...stored.format, fraction: 0 }, { ...value.format, fraction: 0 })
+    )
+      continue;
+    const spelled = formatClock(value.ms, stored.format);
+    if (spelled !== undefined) setOwnMember(fields, rule.field, spelled);
+  }
+  return fields;
 };
 
 /** Whether a clock is one a request starting at `startMs` stamped, in the given format. */

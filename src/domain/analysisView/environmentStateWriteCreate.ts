@@ -503,13 +503,20 @@ const sequencesOf = (
       : [],
   );
 
-/** Whether a later call's sequences hold what serving generates: one past the largest value their scope holds or started with and past the plan's last, spelled as the exemplar spells it. */
+/** Whether a later call's sequences hold what serving generates: one past the largest value their scope holds or started with and past the plan's last, spelled as the exemplar spells it; or, for one that takes a sent value, the value the call sent. */
 const followsSequences = (
   context: EffectContext,
   draft: WriteDraft,
-  created: Pick<StateEntity, "type" | "collection" | "fields">,
+  created: Pick<StateEntity, "type" | "collection" | "fields"> & {
+    readonly sent: JsonObject;
+  },
 ): boolean =>
   sequencesOf(draft, created.collection).every(({ rule, key }) => {
+    if (rule.sent === true && Object.hasOwn(created.sent, rule.field))
+      return same(
+        ownMember(created.fields, rule.field),
+        created.sent[rule.field],
+      );
     const scope = [
       ...context.state.ofType(created.type),
       ...context.startedWith(created.type),
@@ -549,6 +556,7 @@ const agreesLater = (
     ...created,
     observed: call.observed,
     startMs: call.startMs,
+    sent: call.body,
   }) &&
   !contradictsDefault(draft.plan.rules, call, created.fields) &&
   !unruledDiffers(draft.plan.rules, call.observed, {
@@ -597,6 +605,7 @@ const followsCreateRules = (
   created: Pick<StateEntity, "type" | "collection" | "fields"> & {
     readonly observed: JsonObject;
     readonly startMs: number | undefined;
+    readonly sent: JsonObject;
   },
 ): boolean =>
   draft.plan.rules.every((rule) => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DONE_CLOCK_ROWS,
   FEWER_MEMBERS_ROWS,
   NUMBERED_UNLESS_SENT_ROWS,
   PUT_CLEARS_ROWS,
@@ -43,6 +44,19 @@ describe("served writes whose calls send different members", () => {
       name: "Mail",
       owner: 3,
     });
+  });
+
+  it("answers an update with its clock spelled as the recorded answer and stores it as reads spell it", () => {
+    const tasks = servedFrom(DONE_CLOCK_ROWS);
+    const answered = tasks.answer("patch_tasks_by_id", {
+      id: "1",
+      body: { done: true },
+    }).body as { done_at: string };
+    expect(answered.done_at).toMatch(/\.\d{9}Z$/u);
+    const read = tasks.answer("get_tasks_by_id", { id: "1" }).body as {
+      done_at: string;
+    };
+    expect(read.done_at).toMatch(/:\d{2}Z$/u);
   });
 
   it("serves an update that sends only the member every recorded update sent", () => {

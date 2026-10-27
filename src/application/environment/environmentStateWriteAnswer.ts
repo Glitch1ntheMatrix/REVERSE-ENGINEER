@@ -23,6 +23,7 @@ import {
   nestedClockValue,
   nextMadeCount,
   unenveloped,
+  readSpelledClocks,
 } from "../../domain/analysisView/environmentStateWriteStamps.js";
 import {
   anyLinkedSource,
@@ -665,7 +666,10 @@ const answerUpdate = (
     },
   );
   if (!answer.ok) return answer;
-  const after = updatedEntity(entity, written.value);
+  const after = updatedEntity(
+    entity,
+    storedUpdate(serving, plan, written.value),
+  );
   const updated = serving.store.updateAll(
     [after],
     sortedOrder(serving, plan, [{ before: entity, after }]),
@@ -674,6 +678,20 @@ const answerUpdate = (
   serving.store.commitWrite(values.taken);
   return answer;
 };
+
+/** An update's fields as the state stores them: its clocks spelled as the plan's read-back spelled them. */
+export const storedUpdate = (
+  serving: StateServing,
+  plan: StateWritePlan,
+  written: JsonObject,
+): JsonObject =>
+  readSpelledClocks(
+    plan.rules,
+    written,
+    plan.observation?.read === undefined
+      ? undefined
+      : recordedObject(serving, plan.observation.read),
+  );
 
 /** The collection's members in the order a sorted collection holds them after these writes; empty when the plan keeps them in place. */
 export const sortedOrder = (
