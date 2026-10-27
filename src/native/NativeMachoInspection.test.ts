@@ -672,6 +672,7 @@ describe("dSYM diagnostic admission", () => {
     });
     const result = await inspectNativeMacho({
       target: nativeMachoTarget("/fixture/debug-companion"),
+      readEncryption: unreadEncryption,
       run: async (tool, args, _signal, acceptNonZeroIf) => {
         const captured = await runner.run(tool, args);
         if (!captured.ok || tool !== "dyld_info") return captured;
