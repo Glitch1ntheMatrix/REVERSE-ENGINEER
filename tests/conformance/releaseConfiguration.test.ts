@@ -22,7 +22,7 @@ const pluginManifests = [
   ".claude-plugin/plugin.json",
   ".codex-plugin/plugin.json",
 ] as const;
-const pluginServerConfig = ".mcp.json";
+const pluginServerConfig = ".codex-plugin/mcp.json";
 
 describe("release configuration", () => {
   it("keeps doctor and setup runtime support aligned with package engines", async () => {
@@ -316,7 +316,7 @@ describe("plugin release pins", () => {
     });
   });
 
-  it.each(pluginManifests)(
+  it.each([...pluginManifests, pluginServerConfig])(
     "stores %s in the form Release Please rewrites it to",
     async (path) => {
       // Release Please reserializes JSON extra-files, so any other layout

@@ -47,7 +47,7 @@ const pluginManifests = [
   ".claude-plugin/plugin.json",
   ".codex-plugin/plugin.json",
 ] as const;
-const pluginServerConfig = ".mcp.json";
+const pluginServerConfig = ".codex-plugin/mcp.json";
 
 const pluginMarketplaces = [
   ".claude-plugin/marketplace.json",
@@ -92,7 +92,7 @@ const pluginManifestFor = (
     ? {
         version,
         skills: options.skills ?? ["./skill"],
-        mcpServers: "./.mcp.json",
+        mcpServers: "./.codex-plugin/mcp.json",
       }
     : pluginManifest(version, options);
 

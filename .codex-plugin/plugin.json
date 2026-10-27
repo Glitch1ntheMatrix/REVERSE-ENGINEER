@@ -16,7 +16,7 @@
     "mcp-server"
   ],
   "skills": "./skills",
-  "mcpServers": "./.mcp.json",
+  "mcpServers": "./.codex-plugin/mcp.json",
   "interface": {
     "displayName": "REA",
     "shortDescription": "Reverse engineer anything with agents",

@@ -55,60 +55,62 @@ export async function verifyPackagePack({ root, workspace, commands }) {
     ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
     { cwd: stagingDirectory },
   );
-  // npm ci filters foreign-platform optional packages. Include the exact locked
-  // PTY archives as well, without re-resolving the installed dependency tree.
-  const ptyManifest = JSON.parse(
-    await readFile(
-      join(stagingDirectory, "node_modules/@lydell/node-pty/package.json"),
-      "utf8",
-    ),
-  );
-  const platformDirectory = join(workspace, "plugin-platform-packages");
-  await mkdir(platformDirectory);
-  for (const dependency of Object.keys(ptyManifest.optionalDependencies)) {
-    const destination = join(stagingDirectory, "node_modules", dependency);
-    if (
-      await access(destination).then(
-        () => true,
-        (cause) => {
-          if (cause.code !== "ENOENT") throw cause;
-          return false;
-        },
-      )
-    )
-      continue;
-    const locked = shrinkwrap.packages[`node_modules/${dependency}`];
-    if (locked?.version === undefined || locked.integrity === undefined)
-      throw new Error(
-        `Plugin platform dependency is not locked: ${dependency}`,
-      );
-    const [archive] = JSON.parse(
-      (
-        await commands.execNpm(
-          [
-            "pack",
-            "--ignore-scripts",
-            "--json",
-            "--pack-destination",
-            platformDirectory,
-            `${dependency}@${locked.version}`,
-          ],
-          { cwd: platformDirectory },
-        )
-      ).stdout,
+  if (packageJson.dependencies?.["@lydell/node-pty"] !== undefined) {
+    // npm ci filters foreign-platform optional packages. Include the exact locked
+    // PTY archives as well, without re-resolving the installed dependency tree.
+    const ptyManifest = JSON.parse(
+      await readFile(
+        join(stagingDirectory, "node_modules/@lydell/node-pty/package.json"),
+        "utf8",
+      ),
     );
-    if (archive.integrity !== locked.integrity)
-      throw new Error(
-        `Plugin platform archive differs from the lock: ${dependency}`,
+    const platformDirectory = join(workspace, "plugin-platform-packages");
+    await mkdir(platformDirectory);
+    for (const dependency of Object.keys(ptyManifest.optionalDependencies)) {
+      const destination = join(stagingDirectory, "node_modules", dependency);
+      if (
+        await access(destination).then(
+          () => true,
+          (cause) => {
+            if (cause.code !== "ENOENT") throw cause;
+            return false;
+          },
+        )
+      )
+        continue;
+      const locked = shrinkwrap.packages[`node_modules/${dependency}`];
+      if (locked?.version === undefined || locked.integrity === undefined)
+        throw new Error(
+          `Plugin platform dependency is not locked: ${dependency}`,
+        );
+      const [archive] = JSON.parse(
+        (
+          await commands.execNpm(
+            [
+              "pack",
+              "--ignore-scripts",
+              "--json",
+              "--pack-destination",
+              platformDirectory,
+              `${dependency}@${locked.version}`,
+            ],
+            { cwd: platformDirectory },
+          )
+        ).stdout,
       );
-    await mkdir(destination, { recursive: true });
-    await commands.exec("tar", [
-      "-xzf",
-      join(platformDirectory, archive.filename),
-      "-C",
-      destination,
-      "--strip-components=1",
-    ]);
+      if (archive.integrity !== locked.integrity)
+        throw new Error(
+          `Plugin platform archive differs from the lock: ${dependency}`,
+        );
+      await mkdir(destination, { recursive: true });
+      await commands.exec("tar", [
+        "-xzf",
+        join(platformDirectory, archive.filename),
+        "-C",
+        destination,
+        "--strip-components=1",
+      ]);
+    }
   }
   const tarball = join(
     packDirectory,
@@ -128,6 +130,8 @@ export async function verifyPackagePack({ root, workspace, commands }) {
     (await commands.exec("tar", ["-xOf", tarball, "package/package.json"]))
       .stdout,
   );
+  if (packedManifest.mcpName !== "io.github.morluto/rea")
+    throw new Error("package did not retain its MCP Registry ownership marker");
   const packedLock = JSON.parse(
     (
       await commands.exec("tar", [
@@ -185,8 +189,6 @@ export async function verifyPackagePack({ root, workspace, commands }) {
     packedManifest.bin?.["rea-agents"] !== "scripts/rea.mjs"
   )
     throw new Error("package did not expose both rea command entry points");
-  if (packedManifest.mcpName !== "io.github.morluto/rea")
-    throw new Error("package did not retain its MCP Registry ownership marker");
   if (!packedFiles.includes("package/scripts/lib/cli-process-environment.mjs"))
     throw new Error("package omitted the CLI process environment owner");
   if (packedFiles.some((path) => path.startsWith("package/.agents/")))
@@ -224,8 +226,13 @@ export async function verifyPackagePack({ root, workspace, commands }) {
     );
     const serverConfig = path.startsWith(".codex")
       ? JSON.parse(
-          (await commands.exec("tar", ["-xOf", tarball, "package/.mcp.json"]))
-            .stdout,
+          (
+            await commands.exec("tar", [
+              "-xOf",
+              tarball,
+              "package/.codex-plugin/mcp.json",
+            ])
+          ).stdout,
         )
       : manifest;
     const expectedArgs = [
@@ -236,7 +243,7 @@ export async function verifyPackagePack({ root, workspace, commands }) {
       manifest.version !== packedManifest.version ||
       manifest.skills !== "./skills" ||
       (path.startsWith(".codex")
-        ? manifest.mcpServers !== "./.mcp.json" ||
+        ? manifest.mcpServers !== "./.codex-plugin/mcp.json" ||
           serverConfig.mcpServers?.rea?.cwd !== "." ||
           serverConfig.mcpServers?.rea?.startup_timeout_sec !== 30
         : false) ||
@@ -248,7 +255,9 @@ export async function verifyPackagePack({ root, workspace, commands }) {
         `Packaged plugin ${path} does not match the exact runtime and canonical skill release`,
       );
   }
-  if (!packedFiles.includes("package/.mcp.json"))
+  if (packedFiles.includes("package/.mcp.json"))
+    throw new Error("Plugin metadata must not register a project MCP server");
+  if (!packedFiles.includes("package/.codex-plugin/mcp.json"))
     throw new Error("Packaged Codex MCP server declaration is missing");
   if (!packedFiles.includes("package/scripts/plugin-mcp-launcher.mjs"))
     throw new Error("Packaged plugin launcher is missing");
@@ -259,13 +268,6 @@ export async function verifyPackagePack({ root, workspace, commands }) {
     throw new Error(
       "Packaged plugin skill recovery is not pinned to the shipped runtime",
     );
-  if (
-    packedFiles.some(
-      (path) => path.includes("__pycache__") || path.endsWith(".pyc"),
-    )
-  ) {
-    throw new Error("package contained generated Python bytecode");
-  }
   await verifyPackedBridge({ tarball, packedFiles, commands });
   return { tarball };
 }

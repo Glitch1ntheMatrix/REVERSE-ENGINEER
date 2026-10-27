@@ -250,7 +250,7 @@ export async function verifyPackageMcp({
 }) {
   const diagnosed = JSON.parse(
     (
-      await commands.exec(cli, ["mcp", "doctor", "--json"], {
+      await commands.exec(process.execPath, [cli, "mcp", "doctor", "--json"], {
         env: environment,
         timeout: resolveMcpStartupBudgets(environment).doctor.milliseconds,
       })

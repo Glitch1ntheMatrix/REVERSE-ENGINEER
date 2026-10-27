@@ -20,7 +20,7 @@ const inlinePluginManifestSchema = versionSchema.extend({
   }),
 });
 const codexPluginManifestSchema = versionSchema.extend({
-  mcpServers: z.literal("./.mcp.json"),
+  mcpServers: z.literal("./.codex-plugin/mcp.json"),
 });
 const codexServerConfigSchema = z.object({
   mcpServers: z.object({
@@ -231,7 +231,12 @@ async function validateCandidate(git, sha, version, commits) {
     versions.push([path, manifest.version]);
     const server =
       path === ".codex-plugin/plugin.json"
-        ? await readJson(git, sha, ".mcp.json", codexServerConfigSchema)
+        ? await readJson(
+            git,
+            sha,
+            ".codex-plugin/mcp.json",
+            codexServerConfigSchema,
+          )
         : manifest;
     launches.push([path, server.mcpServers.rea.args[1]]);
   }

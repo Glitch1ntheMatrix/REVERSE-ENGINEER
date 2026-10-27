@@ -59,9 +59,9 @@ async function metadata(
     ".claude-plugin/plugin.json": pluginManifest(version),
     ".codex-plugin/plugin.json": {
       version,
-      mcpServers: "./.mcp.json",
+      mcpServers: "./.codex-plugin/mcp.json",
     },
-    ".mcp.json": codexServerConfig(version),
+    ".codex-plugin/mcp.json": codexServerConfig(version),
     "package.json": { name: "rea-agents", version },
     "package-lock.json": { version, packages: { "": { version } } },
     ".release-please-manifest.json": { ".": version },
@@ -605,7 +605,7 @@ it.each(
     stale: "version",
     manifest:
       path === ".codex-plugin/plugin.json"
-        ? { version: "5.1.0", mcpServers: "./.mcp.json" }
+        ? { version: "5.1.0", mcpServers: "./.codex-plugin/mcp.json" }
         : pluginManifest("5.1.0"),
     failure: "declares 5.1.0; release branch requires 6.0.0",
   })),
@@ -627,7 +627,7 @@ it.each([
     manifest: pluginManifest("6.0.0", "5.1.0"),
   },
   {
-    path: ".mcp.json",
+    path: ".codex-plugin/mcp.json",
     manifest: codexServerConfig("6.0.0", "5.1.0"),
   },
 ])("reads the release pin from $path", async ({ path, manifest }) => {

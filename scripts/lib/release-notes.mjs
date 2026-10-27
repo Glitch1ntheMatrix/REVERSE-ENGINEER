@@ -372,7 +372,7 @@ export function verifyReleaseNotes(raw, text, body) {
 const VERSION_ONLY_PLUGIN_METADATA = new Set([
   ".claude-plugin/plugin.json",
   ".codex-plugin/plugin.json",
-  ".mcp.json",
+  ".codex-plugin/mcp.json",
   ".claude-plugin/marketplace.json",
   ".agents/plugins/marketplace.json",
 ]);
