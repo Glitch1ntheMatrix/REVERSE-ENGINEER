@@ -150,6 +150,7 @@ describe("ggcode YAML registration", () => {
     const servers = await readServers(client.configPath);
     expect(servers).toEqual([
       {
+        model: "rea",
         name: "rea",
         type: "stdio",
         command: command[0],

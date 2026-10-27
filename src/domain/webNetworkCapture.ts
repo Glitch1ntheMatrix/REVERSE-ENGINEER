@@ -1,6 +1,17 @@
 import { z } from "zod";
+import {
+  browserDeadlineIncrease,
+  browserDeadlineRetry,
+  noRuntimeOverrideSentence,
+  optionalBrowserDeadlineMs,
+  selectedBrowserDeadlineMs,
+} from "./browserDeadline.js";
 import { jsonValueSchema } from "./jsonValue.js";
-import { localPathStringSchema } from "./localPath.js";
+import { absoluteLocalPathStringSchema } from "./localPath.js";
+import {
+  protobufDecodingSchema,
+  protobufOptionsSchema,
+} from "./protobufWire.js";
 import { qlogCaptureFactsSchema } from "./qlogCapture.js";
 import { canBorrowParsedJsonSnapshot } from "./immutableJson.js";
 
@@ -12,6 +23,23 @@ export const WEB_NETWORK_CAPTURE_LIMITS = {
   depth: 64,
 } as const;
 
+/** Capture deadline used when capture_timeout_ms is omitted. */
+export const DEFAULT_WEB_NETWORK_CAPTURE_TIMEOUT_MS =
+  WEB_NETWORK_CAPTURE_LIMITS.timeoutMs;
+
+export const selectedWebNetworkCaptureTimeoutMs = (
+  selected: number | undefined,
+): number =>
+  selectedBrowserDeadlineMs(selected, DEFAULT_WEB_NETWORK_CAPTURE_TIMEOUT_MS);
+
+/** Caller-visible capture deadline. Byte and depth caps stay fixed. */
+export const webNetworkCaptureTimeoutRecovery = (
+  timeoutMs: number,
+): { readonly userMessage: string; readonly remediationAction: string } => ({
+  userMessage: `inspect_web_network_capture reached its ${String(timeoutMs)} ms capture deadline (deadlineExpired) for capture_timeout_ms. No partial capture is returned. This is not the MCP client deadline.`,
+  remediationAction: `${browserDeadlineIncrease("capture_timeout_ms", timeoutMs, DEFAULT_WEB_NETWORK_CAPTURE_TIMEOUT_MS, "--capture-timeout-ms")} ${browserDeadlineRetry} ${noRuntimeOverrideSentence(`The ${String(WEB_NETWORK_CAPTURE_LIMITS.inputBytes)}-byte input budget, ${String(WEB_NETWORK_CAPTURE_LIMITS.outputBytes)}-byte reply budget, and ${String(WEB_NETWORK_CAPTURE_LIMITS.depth)}-level nesting cap stay fixed.`, "capture_timeout_ms")}`,
+});
+
 export const WEB_NETWORK_CAPTURE_FORMATS = [
   "har",
   "mitmproxy",
@@ -21,23 +49,27 @@ export const WEB_NETWORK_CAPTURE_FORMATS = [
 
 /** Inspect an explicit retained capture without contacting its recorded destinations. */
 export const inspectWebNetworkCaptureInputSchema = z.strictObject({
-  capture_path: localPathStringSchema.describe(
+  capture_path: absoluteLocalPathStringSchema.describe(
     "Absolute local HAR, mitmproxy, Fiddler SAZ or aioquic qlog capture path.",
   ),
   format: z.enum(WEB_NETWORK_CAPTURE_FORMATS),
   record_ordinals: z
-    .array(z.number().int().nonnegative())
+    .array(z.int().nonnegative())
     .min(1)
     .optional()
     .describe(
       "Zero-based producer record ordinals, in caller-selected order. Omit to inspect every record.",
     ),
+  protobuf: protobufOptionsSchema.optional(),
   sensitive_values: z
     .array(z.string().min(1))
     .default([])
     .describe(
       "Literal text excluded from capture payloads, byte/numeric projections, producer coordinates, artifact paths/digests and diagnostic text. Declaration strings are never persisted in Evidence parameters. Canonical contract keys, enums and provider identities remain intact.",
     ),
+  capture_timeout_ms: optionalBrowserDeadlineMs(
+    `Capture wall-clock deadline in milliseconds (default ${String(DEFAULT_WEB_NETWORK_CAPTURE_TIMEOUT_MS)}), from decoder start through process exit. Omitted means ${String(DEFAULT_WEB_NETWORK_CAPTURE_TIMEOUT_MS)} and applies on the next capture. deadlineExpired returns no partial capture. Does not raise the fixed ${String(WEB_NETWORK_CAPTURE_LIMITS.inputBytes)}-byte input budget, ${String(WEB_NETWORK_CAPTURE_LIMITS.outputBytes)}-byte reply budget, or ${String(WEB_NETWORK_CAPTURE_LIMITS.depth)}-level nesting cap. Those have no runtime override.`,
+  ),
 });
 
 /** Read declarations through their owning schema for service and adapter failures. */
@@ -80,7 +112,7 @@ const binaryBase = {
 const retainedBinaryDescriptorSchema = z.strictObject({
   ...binaryBase,
   state: z.literal("retained"),
-  bytes: z.number().int().nonnegative(),
+  bytes: z.int().nonnegative(),
   sha256: z.string().regex(/^[0-9a-f]{64}$/),
 });
 const redactedBinaryDescriptorSchema = z.strictObject({
@@ -106,7 +138,7 @@ const numberSchema = z.strictObject({
 
 /** Preserve producer representations with independent sidecars rather than invented browser IDs. */
 export const webNetworkCaptureRecordSchema = z.strictObject({
-  ordinal: z.number().int().nonnegative(),
+  ordinal: z.int().nonnegative(),
   location: z.discriminatedUnion("kind", [
     z.strictObject({
       kind: z.literal("unknown"),
@@ -119,8 +151,8 @@ export const webNetworkCaptureRecordSchema = z.strictObject({
     }),
     z.strictObject({
       kind: z.literal("byte-range"),
-      offset: z.number().int().nonnegative(),
-      bytes: z.number().int().positive(),
+      offset: z.int().nonnegative(),
+      bytes: z.int().positive(),
     }),
   ]),
   reported: jsonValueSchema,
@@ -128,6 +160,12 @@ export const webNetworkCaptureRecordSchema = z.strictObject({
   numeric_literals: z.array(numberSchema),
   redactions: z.array(redactionSchema),
   limitations: z.array(z.string()),
+  protobuf: z
+    .array(protobufDecodingSchema)
+    .exactOptional()
+    .describe(
+      "Flat decoding facts for explicitly selected records. Field indices are local to a body; offset_basis states whether ranges refer to retained or base64-decoded bytes. Interpretations without a caller-supplied schema are candidates.",
+    ),
 });
 
 /** The selected offline parser profile, independent of authenticated producer identity. */
@@ -138,7 +176,26 @@ export const webNetworkCaptureDecoderSchema = z.strictObject({
 });
 
 /** Source coverage is shared by every offline decoder. */
+export const protobufCaptureCoverageSchema = z
+  .strictObject({
+    status: z.enum(["complete", "partial"]),
+    selected_records: z.number().int().nonnegative(),
+    inspected_records: z.number().int().nonnegative(),
+  })
+  .superRefine((coverage, context) => {
+    if (
+      coverage.inspected_records > coverage.selected_records ||
+      (coverage.status === "complete" &&
+        coverage.inspected_records !== coverage.selected_records)
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["status"],
+        message: "Protobuf coverage contradicts its inspected selection.",
+      });
+  });
 const payloadShape = {
+  protobuf_coverage: protobufCaptureCoverageSchema.exactOptional(),
   decoder: webNetworkCaptureDecoderSchema,
   container: z.strictObject({
     reported: jsonValueSchema,
@@ -146,7 +203,7 @@ const payloadShape = {
     redactions: z.array(redactionSchema),
     records_pointer: pointerSchema.nullable(),
   }),
-  total_records: z.number().int().nonnegative(),
+  total_records: z.int().nonnegative(),
   records: z.array(webNetworkCaptureRecordSchema),
 };
 const refineCoverage = (
@@ -186,7 +243,7 @@ export const webNetworkCaptureArtifactSchema = z.strictObject({
     .regex(/^[0-9a-f]{64}$/)
     .nullable()
     .describe("Observed SHA-256; null only when explicitly excluded."),
-  bytes: z.number().int().nonnegative(),
+  bytes: z.int().nonnegative(),
 });
 const artifactShape = {
   artifact: webNetworkCaptureArtifactSchema,
