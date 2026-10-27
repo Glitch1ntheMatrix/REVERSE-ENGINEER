@@ -124,23 +124,14 @@ const validateWindowsPeArtifact = (
   const coff = readPeCoffHeader(bytes.subarray(offset + 4, offset + 24));
   if (
     !coff.ok ||
-    coff.value.machine !== 0x8664 ||
+    coff.value.machine !== WINDOWS_NATIVE_TARGETS[architecture].machine ||
     coff.value.optionalHeaderSize > bytes.length - offset - 24
   )
-    return err(
-      new WindowsNativeArtifactError(
-        "Windows native artifact is not a Windows x64 PE32+ image",
-      ),
-    );
+    return notTarget();
   const optional = readPeOptionalHeaderIdentity(
     bytes.subarray(offset + 24, offset + 24 + coff.value.optionalHeaderSize),
   );
-  if (!optional.ok || optional.value.bits !== 64)
-    return err(
-      new WindowsNativeArtifactError(
-        "Windows native artifact is not a Windows x64 PE32+ image",
-      ),
-    );
+  if (!optional.ok || optional.value.bits !== 64) return notTarget();
   return ok(undefined);
 };
 
