@@ -478,6 +478,10 @@ The configuration keys are `node`, `sdk_driver`, `rea3521`, `r2`, `r2mcp`,
 `ghidra`, `java`, `codex`, `model`, `reasoning`, `output`, `warm_repeats`, `lanes`
 and `targets`. Each target has `id`, `path`, `addresses`, literal SDK `checks`
 and an agent `prompt`. Re-resolve addresses for newly compiled binaries.
+Custom `servers.<lane>.env` values are passed to the agent at runtime but replaced
+with `[not persisted]` in `selected-settings.json`, including overrides of default
+environment entries. This applies to every custom environment value without
+guessing sensitivity from its name; the snapshot retains the variable names.
 Retain exact configurations, executable/target hashes and raw outputs privately;
 the published data contains selected measurements, answers and provenance.
 

@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import psutil
 
-from benchmark import CleanupIncomplete, measure, OwnershipSession, main
+from benchmark import CleanupIncomplete, measure, OwnershipSession, main, agent_command
 
 
 SLEEPER = "import time; time.sleep(30)"
@@ -29,6 +29,27 @@ if sys.argv[1] != 'exit': time.sleep(30)
 
 
 class BenchmarkCleanupTest(unittest.TestCase):
+    def test_custom_environment_values_are_runtime_only_including_default_overrides(self):
+        with tempfile.TemporaryDirectory(prefix="rea-benchmark-settings-") as root:
+            directory = Path(root)
+            environment = {"SESSION": "opaque-transport-credential", "PRIVATE_VALUE": "marked-sensitive",
+                           "GHIDRA_INSTALL_DIR": "/custom/provider", "API_KEY": "ordinary-selected-value"}
+            config = {"codex": "codex", "model": "fixture", "reasoning": "low", "r2": "/selected/r2",
+                      "ghidra": "/default/ghidra", "java": "/selected/java", "servers": {
+                          "fixture": {"command": "provider", "args": ["serve"], "tools": ["inspect"],
+                                      "env": environment, "sensitive": {"env": ["PRIVATE_VALUE"]}}}}
+            command = agent_command(config, "fixture", directory)
+            saved = (directory / "selected-settings.json").read_text()
+            settings = json.loads(saved)
+            for key, value in environment.items():
+                self.assertIn("mcp_servers.engine.env." + key + "=" + json.dumps(value), command)
+                self.assertNotIn(value, saved)
+                self.assertEqual(settings["mcp_servers.engine.env." + key], "[not persisted]")
+            self.assertEqual(settings["mcp_servers.engine.env.REA_R2_COMMAND"], config["r2"])
+            self.assertEqual(settings["mcp_servers.engine.env.JAVA_HOME"], config["java"])
+            self.assertEqual(settings["mcp_servers.engine.command"], "provider")
+            self.assertEqual(config["servers"]["fixture"]["env"], environment)
+
     def test_agent_digest_mismatch_retains_both_hashes_and_stops_trials(self):
         for changed in (False, True):
             with self.subTest(changed=changed), tempfile.TemporaryDirectory(prefix="rea-benchmark-digest-") as root:

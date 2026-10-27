@@ -369,7 +369,12 @@ def agent_command(config, lane, directory):
     for key, value in settings.items():
         command.extend(["-c", key + "=" + json.dumps(value)])
     command.append("-")
-    (directory / "selected-settings.json").write_text(json.dumps(settings, indent=2) + "\n")
+    # Custom environment values are runtime-only, without guessing secrecy from names.
+    saved_settings = {**settings, **{
+        "mcp_servers.engine.env." + key: "[not persisted]"
+        for key in (custom or {}).get("env", {})
+    }}
+    (directory / "selected-settings.json").write_text(json.dumps(saved_settings, indent=2) + "\n")
     return command
 
 
