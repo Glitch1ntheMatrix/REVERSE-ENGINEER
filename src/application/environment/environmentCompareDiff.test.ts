@@ -850,6 +850,40 @@ describe("scalar sets of mapped ids", () => {
     ]);
     expect(compared.normalised.ids).toBe(1);
   });
+
+  it("reports a replaced id as a value change, not an order change, when one survivor shifts", () => {
+    const map = new IdMap();
+    map.learn(101, 1);
+    map.learn(102, 2);
+    const compared = compareAnswers(
+      { status: 200, body: { kind: "json", value: { ids: [101, 102] } } },
+      { status: 200, body: { kind: "json", value: { ids: [2, 9] } } },
+      map,
+    );
+    // 102 -> 2 is the only survivor; 101 -> 1 was replaced by 9. One identity
+    // cannot establish a relative-order change, so only the value differs.
+    expect(compared.differences).toEqual([
+      { category: "value", pointer: "/ids/0", live: "101", env: "9" },
+    ]);
+    expect(compared.normalised.ids).toBe(1);
+  });
+
+  it("still reports an order change when two mapped survivors are reordered", () => {
+    const map = new IdMap();
+    map.learn(101, 1);
+    map.learn(102, 2);
+    map.learn(103, 3);
+    const compared = compareAnswers(
+      { status: 200, body: { kind: "json", value: { ids: [101, 102, 103] } } },
+      { status: 200, body: { kind: "json", value: { ids: [2, 1, 99] } } },
+      map,
+    );
+    expect(compared.differences).toEqual([
+      { category: "order", pointer: "/ids" },
+      { category: "value", pointer: "/ids/2", live: "103", env: "99" },
+    ]);
+    expect(compared.normalised.ids).toBe(2);
+  });
 });
 
 describe("ids two collections reuse", () => {

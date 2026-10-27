@@ -355,9 +355,11 @@ class Differ {
     const field = pointer.slice(pointer.lastIndexOf("/") + 1);
     const idList =
       live.length > 0 && live.every((item) => this.#isIdListItem(item, field));
-    const pairs = idList
+    // Survivors establish order; fallback pairs are value replacements, not
+    // the same item in a new position, so they do not count toward order.
+    const { pairs, ordered } = idList
       ? this.#idListPairs(this.#translateIdList(live, field), env)
-      : pairElements(live, env);
+      : { pairs: pairElements(live, env), ordered: pairElements(live, env) };
     if (live.length !== env.length || pairs.length !== live.length)
       this.add({
         category: "length",
@@ -365,7 +367,7 @@ class Differ {
         live: `${String(live.length)} items`,
         env: `${String(env.length)} items (${String(pairs.length)} paired)`,
       });
-    const envOrder = pairs.map(([, right]) => right);
+    const envOrder = ordered.map(([, right]) => right);
     if (
       envOrder.some((right, index) => index > 0 && right < envOrder[index - 1]!)
     )
@@ -404,11 +406,14 @@ class Differ {
     );
   }
 
-  /** Pair translated id-list survivors to their environment match, then any remaining live and environment items by position, as [live index, environment index] in live order. */
+  /** Pair translated id-list survivors to their environment match, then any remaining live and environment items by position. `ordered` is the survivor pairs alone, whose relative order a reorder can change; `pairs` adds the positional fallbacks. Both are [live index, environment index] in live order. */
   #idListPairs(
     translated: JsonValue[],
     env: JsonValue[],
-  ): Array<readonly [number, number]> {
+  ): {
+    readonly pairs: Array<readonly [number, number]>;
+    readonly ordered: Array<readonly [number, number]>;
+  } {
     const available = new Map<string, number[]>();
     env.forEach((item, index) => {
       const key = JSON.stringify(item);
@@ -416,19 +421,23 @@ class Differ {
       if (indices === undefined) available.set(key, [index]);
       else indices.push(index);
     });
-    const pairs: Array<readonly [number, number]> = [];
+    const ordered: Array<readonly [number, number]> = [];
     const unpairedLive: number[] = [];
     translated.forEach((item, index) => {
       const indices = available.get(JSON.stringify(item));
       if (indices !== undefined && indices.length > 0)
-        pairs.push([index, indices.shift()!]);
+        ordered.push([index, indices.shift()!]);
       else unpairedLive.push(index);
     });
     const unpairedEnv = [...available.values()].flat().sort((a, b) => a - b);
     const positional = Math.min(unpairedLive.length, unpairedEnv.length);
+    const pairs = [...ordered];
     for (let index = 0; index < positional; index += 1)
       pairs.push([unpairedLive[index]!, unpairedEnv[index]!]);
-    return pairs.sort(([a], [b]) => a - b);
+    return {
+      pairs: pairs.sort(([a], [b]) => a - b),
+      ordered: [...ordered].sort(([a], [b]) => a - b),
+    };
   }
 
   /** Arrays of scalars holding the same items in another order differ only in order, as sets an application returns unordered do. */
