@@ -6,6 +6,7 @@ import {
 } from "../domain/analysisErrorCore.js";
 import { parseRecordedTransportUrl } from "../domain/recordedTransportUrl.js";
 import { fixedAllowanceOptions } from "../domain/fixedAllowanceRemediation.js";
+import { parseDnsPacketFields } from "./PcapDnsOutput.js";
 import { compareUnicodeCodePoints } from "../domain/unicodeCodePointOrder.js";
 
 const OPERATION = "inspect_pcap_capture";
@@ -222,6 +223,7 @@ export const parseTsharkJsonOutput = async (
   let unresolvedHttpUriTarget = false;
   const unattributed = new Set<string>();
   let unattributedPackets = 0;
+  let unresolvedDnsOwnership = false;
   let retainedBytes = 0;
   const charge = (value: string): void => {
     retainedBytes += 192 + 2 * Buffer.byteLength(value);
@@ -296,30 +298,18 @@ export const parseTsharkJsonOutput = async (
       if (!endpoints.has(address)) charge(address);
       endpoints.set(address, (endpoints.get(address) ?? 0) + 1);
     }
-    const questions = new Set(
-      field("dns.qry.name").filter((value) => value !== ""),
-    );
-    for (const question of questions)
+    const dnsFacts = parseDnsPacketFields(field);
+    for (const question of dnsFacts.questions)
       if (!dns.has(question)) {
         charge(question);
         dns.set(question, new Set());
       }
-    const addresses = [...field("dns.a"), ...field("dns.aaaa")].filter(
-      (value) => value !== "",
-    );
-    const response = field("dns.flags.response");
-    if (addresses.length > 0) {
-      if (
-        questions.size === 1 &&
-        response.length > 0 &&
-        response.every((value) => value === "True" || value === "1")
-      ) {
-        const values = dns.get(questions.values().next().value!)!;
-        for (const address of addresses) add(values, address);
-      } else {
-        unattributedPackets += 1;
-        for (const address of addresses) add(unattributed, address);
-      }
+    unresolvedDnsOwnership ||= dnsFacts.incomplete;
+    for (const [question, address] of dnsFacts.assigned)
+      add(dns.get(question)!, address);
+    if (dnsFacts.unattributed.length > 0) {
+      unattributedPackets += 1;
+      for (const address of dnsFacts.unattributed) add(unattributed, address);
     }
     for (const value of field("tls.handshake.extensions_server_name"))
       if (value !== "") add(sni, value);
@@ -422,7 +412,7 @@ export const parseTsharkJsonOutput = async (
     packetCount: packets.length,
     partial:
       observedUris.size > uris.size ||
-      unattributedPackets > 0 ||
+      unresolvedDnsOwnership ||
       unresolvedHttpUriTarget,
   };
 };

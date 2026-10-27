@@ -54,7 +54,12 @@ import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
 import { artifactFileCancellationCause } from "../artifacts/ArtifactFileOperation.js";
 import { ArtifactAnalysisResources } from "../process/ArtifactAnalysisResources.js";
 import { readLinuxResourceLimits } from "../process/LinuxResourceLimits.js";
-import { realpath } from "node:fs/promises";
+import { snapshotEnvironment } from "../process/snapshotEnvironment.js";
+import {
+  assertArtifactCommandPath,
+  selectArtifactCommandPath,
+  type ArtifactCommandPath,
+} from "../process/ArtifactCommandPath.js";
 
 export const PCAP_PROVIDER_IDENTITY = {
   id: "pcap",
@@ -70,6 +75,16 @@ const FIELDS = [
   "ipv6.dst",
   "dns.flags.response",
   "dns.qry.name",
+  "dns.qry.type",
+  "dns.qry.class",
+  "dns.count.queries",
+  "dns.count.answers",
+  "dns.count.auth_rr",
+  "dns.count.add_rr",
+  "dns.resp.name",
+  "dns.resp.type",
+  "dns.resp.class",
+  "dns.cname",
   "dns.a",
   "dns.aaaa",
   "tls.handshake.extensions_server_name",
@@ -208,7 +223,7 @@ export class PcapProvider {
   private readonly launcher: PcapCommandLauncher | undefined;
   private readonly wiresharkIdentities = new Map<
     string,
-    { readonly path: string; readonly identity: WiresharkExecutableIdentity }
+    ArtifactCommandPath & { readonly identity: WiresharkExecutableIdentity }
   >();
   private readonly snapshots = new Set<PcapSnapshot>();
   private readonly snapshotFailures = new Map<
@@ -221,7 +236,7 @@ export class PcapProvider {
   >();
 
   constructor(options: PcapProviderOptions = {}) {
-    this.environment = options.environment ?? process.env;
+    this.environment = snapshotEnvironment(options.environment ?? process.env);
     this.launcher = options.launcher;
     this.#resources = new ArtifactAnalysisResources(
       "pcap",
@@ -282,21 +297,22 @@ export class PcapProvider {
     const selected = this.wiresharkIdentities.get(command);
     try {
       if (selected !== undefined) {
+        await assertArtifactCommandPath(selected, operation, { signal });
         const before = await this.readToolIdentity(
           operation,
-          selected.path,
+          selected.resolvedPath,
           signal,
         );
         assertWiresharkExecutableIdentity(
           operation,
-          selected.path,
+          selected.resolvedPath,
           selected.identity,
           wiresharkExecutableIdentity(before),
         );
       }
       output = await runPcapCommand({
         operation,
-        command: selected?.path ?? command,
+        command: selected?.invocationPath ?? command,
         arguments: args,
         limits,
         signal,
@@ -327,10 +343,20 @@ export class PcapProvider {
       });
       commandReturned = true;
       if (selected !== undefined) {
-        const after = await this.readToolIdentity(operation, selected.path);
+        await assertArtifactCommandPath(selected, operation, {
+          capturedOutput: {
+            stdout: output.stdout,
+            stderr: output.stderr,
+            truncated: output.cleanup?.capturedOutput.truncated ?? false,
+          },
+        });
+        const after = await this.readToolIdentity(
+          operation,
+          selected.resolvedPath,
+        );
         assertWiresharkExecutableIdentity(
           operation,
-          selected.path,
+          selected.resolvedPath,
           selected.identity,
           wiresharkExecutableIdentity(after),
           {
@@ -403,9 +429,9 @@ export class PcapProvider {
     ] as const) {
       const path = locateWiresharkTool(selected, this.environment);
       if (path === undefined) continue;
-      let resolvedPath: string;
+      let commandPath: ArtifactCommandPath;
       try {
-        resolvedPath = await realpath(path);
+        commandPath = await selectArtifactCommandPath(path, signal);
       } catch (cause) {
         if (
           cause instanceof Error &&
@@ -422,11 +448,11 @@ export class PcapProvider {
       }
       const snapshot = await this.readToolIdentity(
         operation,
-        resolvedPath,
+        commandPath.resolvedPath,
         signal,
       );
       this.wiresharkIdentities.set(selected.command, {
-        path: resolvedPath,
+        ...commandPath,
         identity: wiresharkExecutableIdentity(snapshot),
       });
     }
@@ -461,7 +487,8 @@ export class PcapProvider {
         tshark_source: selection.tshark.source,
         tshark_version: identity.tsharkVersion,
         tshark_resolved_path:
-          this.wiresharkIdentities.get(selection.tshark.command)?.path ?? null,
+          this.wiresharkIdentities.get(selection.tshark.command)
+            ?.resolvedPath ?? null,
         tshark_sha256:
           this.wiresharkIdentities.get(selection.tshark.command)?.identity
             .sha256 ?? null,
@@ -474,8 +501,8 @@ export class PcapProvider {
         capinfos_source: selection.capinfos.source,
         capinfos_version: identity.capinfosVersion,
         capinfos_resolved_path:
-          this.wiresharkIdentities.get(selection.capinfos.command)?.path ??
-          null,
+          this.wiresharkIdentities.get(selection.capinfos.command)
+            ?.resolvedPath ?? null,
         capinfos_sha256:
           this.wiresharkIdentities.get(selection.capinfos.command)?.identity
             .sha256 ?? null,
@@ -1042,7 +1069,7 @@ export class PcapProvider {
       limitations: [
         ...this.nativeLimitations,
         "Both tools read one owned snapshot; target identity comes from its admitted source descriptor",
-        "DNS address values are associated only with a single question in the same response packet; values may include additional DNS records, not only final resolution answers",
+        "DNS address attribution requires consistent RR owner/type and section counts for one question in one response; only matching answer owners or unambiguous answer-section CNAME chains are associated. Authority, additional, unrelated and ambiguous addresses are retained separately as unattributed; these packet-local relationships do not prove final resolution",
         "Only bytes present in the saved capture are examined; encryption and capture truncation can hide higher-level fields",
         "HTTP URI inventory examines decoded HTTP/1 and HTTP/2 request fields; HTTP/3 URI semantics are outside this profile",
         ...(fields.partial

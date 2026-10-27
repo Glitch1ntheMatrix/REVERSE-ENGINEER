@@ -30,14 +30,17 @@ const facts = (
     },
   ],
 });
-const evidence = (interfaceFacts?: WasmInterface) => {
+const evidence = (
+  interfaceFacts?: WasmInterface,
+  format: "file" | "pe" = "file",
+) => {
   const report = wasmArtifactFixture();
   if (interfaceFacts !== undefined) report.interface = interfaceFacts;
   return createEvidence(
     {
       path: report.artifact.path,
       sha256: report.artifact.sha256,
-      format: "file",
+      format,
     },
     { id: "fixture", name: "typed fixture", version: "1" },
     {
@@ -128,7 +131,7 @@ it("withholds absence claims for historical or partial inventories and unsupport
   });
 });
 
-it("authenticates semantic Evidence and binds display subject and selection identity", async () => {
+it("authenticates semantic Evidence and rejects altered artifact digests", async () => {
   const left = JSON.parse(JSON.stringify(evidence(facts("f"))));
   left.normalized_result.interface.entries[0].name = "tampered";
   expect(
@@ -139,10 +142,22 @@ it("authenticates semantic Evidence and binds display subject and selection iden
     }),
   ).toMatchObject({ ok: false, error: { _tag: "AnalysisInputError" } });
   const rebound = JSON.parse(JSON.stringify(evidence(facts("f"))));
-  rebound.subject.local_path = "/other.wasm";
+  rebound.subject.digest.sha256 = "b".repeat(64);
   expect(
     await compareWasmInterfaces({
       left: rebound,
+      right: evidence(facts("f")),
+      scope: "both",
+    }),
+  ).toMatchObject({ ok: false, error: { _tag: "AnalysisInputError" } });
+});
+
+it("requires the producer's file subject format even for authentic Evidence", async () => {
+  const wrongFormat = evidence(facts("f"), "pe");
+  expect(parseEvidence(wrongFormat)).toEqual(wrongFormat);
+  expect(
+    await compareWasmInterfaces({
+      left: wrongFormat,
       right: evidence(facts("f")),
       scope: "both",
     }),
