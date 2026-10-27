@@ -195,6 +195,10 @@ void test("changed artifacts fail, external HTTP identity stays unknown and canc
     reader(observation(instructions), changed).read,
   );
   assert.equal(mismatch.ok, false);
+  assert.equal(mismatch.error._tag, "AnalysisArtifactChangedError");
+  assert.equal(mismatch.error.path, target.path);
+  assert.equal(projectAnalysisError(mismatch.error).code, "artifact_changed");
+  assert.equal(projectAnalysisError(mismatch.error).retryable, true);
   assert.match(mismatch.error.reason, /digest changed/u);
   assert.equal(mismatch.error.partialObservation.observations.length, 2);
   const external = {

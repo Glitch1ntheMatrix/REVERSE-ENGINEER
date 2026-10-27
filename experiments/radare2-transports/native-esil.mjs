@@ -1,6 +1,9 @@
 // Isolated native ESIL DFG experiment; no Ghidra plugin or target execution.
 import { z } from "zod";
-import { AnalysisInputError } from "../../dist/domain/analysisErrorCore.js";
+import {
+  AnalysisArtifactChangedError,
+  AnalysisInputError,
+} from "../../dist/domain/analysisErrorCore.js";
 import { err, ok } from "../../dist/domain/result.js";
 import { observationError } from "./observation-error.mjs";
 
@@ -113,7 +116,9 @@ function targetConsistency(first, second) {
   )
     throw new Error("Native observation has an invalid target digest");
   if (new Set(known).size > 1)
-    throw new Error(
+    throw new AnalysisArtifactChangedError(
+      OPERATION,
+      first?.path ?? second?.path ?? "unverified-external-core",
       "Target digest changed between native instruction decoding and DFG reduction",
     );
   const external = [first, second].some(
