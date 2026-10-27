@@ -171,3 +171,10 @@ ownership evidence through retries. If cleanup remains unverified,
 `CleanupIncomplete` retains that owner and the child handle even when neither
 output file was saved. Manifests cannot restore a lost helper's private ledger;
 see [retry and measurement limits](BENCHMARK.md#reproduction-and-limits).
+
+Agent trials save `agent-summary.json` even after a nonzero exit, resource limit,
+or cancellation. The summary retains the initial target digest and, after verified
+cleanup, the post-trial digest. Pending cleanup leaves that digest `null` with an
+explicit reason. Truncated output or unavailable final bytes are recorded alongside
+the available facts; summary failures never replace the trial's original exception
+or its retained cleanup owner. A failed summary write is reported on that exception.

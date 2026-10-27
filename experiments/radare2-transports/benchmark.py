@@ -378,6 +378,39 @@ def agent_command(config, lane, directory):
     return command
 
 
+def save_agent_summary(config, target, setup, directory, before_digest, failure):
+    summary = {
+        "requested_model": config["model"], "reasoning": config["reasoning"],
+        "usage": [], "calls": [], "answer_path": str(setup / "answer.txt"),
+        "target_sha256_before": before_digest, "target_sha256_after": None,
+        "trial_status": "failed" if failure is not None else "completed",
+        "correctness": "unknown",
+    }
+    try:
+        if isinstance(failure, CleanupIncomplete):
+            summary["target_sha256_after_unknown_reason"] = "Owned trial cleanup remains incomplete"
+        else:
+            summary["target_sha256_after"] = hashlib.sha256(Path(target["path"]).read_bytes()).hexdigest()
+            summary["correctness"] = ("requires_source_oracle_review"
+                                      if before_digest == summary["target_sha256_after"] else "artifact_changed")
+        events = directory / "stdout.log"
+        if events.exists():
+            for line in events.read_text().splitlines():
+                event = json.loads(line)
+                if "usage" in event:
+                    summary["usage"].append(event["usage"])
+                item = event.get("item", {})
+                if event.get("type") == "item.completed" and item.get("type") == "mcp_tool_call":
+                    summary["calls"].append({key: item.get(key) for key in ["server", "tool", "arguments", "status", "error"]})
+    except BaseException as cause:
+        summary["summary_error"] = str(cause)
+        summary["trial_status"] = "failed"
+        raise
+    finally:
+        (directory / "agent-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    return summary["target_sha256_after"] == before_digest
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("configuration", type=Path)
@@ -414,27 +447,20 @@ def main():
                     prompt = target["prompt"]
                     (setup / "prompt.txt").write_text(prompt)
                     before_digest = hashlib.sha256(Path(target["path"]).read_bytes()).hexdigest()
-                    result = measure(command, directory, prompt=prompt, timeout=600, node=config["node"])
-                    after_digest = hashlib.sha256(Path(target["path"]).read_bytes()).hexdigest()
-                    usage = []
-                    calls = []
-                    events = directory / "stdout.log"
-                    for line in events.read_text().splitlines():
-                        event = json.loads(line)
-                        if "usage" in event:
-                            usage.append(event["usage"])
-                        item = event.get("item", {})
-                        if event.get("type") == "item.completed" and item.get("type") == "mcp_tool_call":
-                            calls.append({key: item.get(key) for key in ["server", "tool", "arguments", "status", "error"]})
-                    (directory / "agent-summary.json").write_text(json.dumps({
-                        "requested_model": config["model"], "reasoning": config["reasoning"],
-                        "usage": usage, "calls": calls,
-                        "answer_path": str(setup / "answer.txt"),
-                        "target_sha256_before": before_digest,
-                        "target_sha256_after": after_digest,
-                        "correctness": "requires_source_oracle_review" if before_digest == after_digest else "artifact_changed",
-                    }, indent=2) + "\n")
-                    if before_digest != after_digest:
+                    failure = None
+                    try:
+                        result = measure(command, directory, prompt=prompt, timeout=600, node=config["node"])
+                    except BaseException as cause:
+                        failure = cause
+                        raise
+                    finally:
+                        try:
+                            unchanged = save_agent_summary(config, target, setup, directory, before_digest, failure)
+                        except BaseException as cause:
+                            if failure is None:
+                                raise
+                            failure.add_note("Agent summary could not be completed: " + str(cause))
+                    if not unchanged:
                         raise RuntimeError("Target changed during agent trial; stopping trials: " + target["path"])
                 print(json.dumps({"mode": args.mode, "target": target["id"], "lane": lane,
                                   "trial": trial + 1, **result}), flush=True)

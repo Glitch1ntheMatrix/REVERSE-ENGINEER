@@ -51,8 +51,10 @@ class BenchmarkCleanupTest(unittest.TestCase):
             self.assertEqual(config["servers"]["fixture"]["env"], environment)
 
     def test_agent_digest_mismatch_retains_both_hashes_and_stops_trials(self):
-        for changed in (False, True):
-            with self.subTest(changed=changed), tempfile.TemporaryDirectory(prefix="rea-benchmark-digest-") as root:
+        cases = ("unchanged", "changed", "nonzero", "limit", "cancelled", "pending-cleanup",
+                 "truncated-output", "missing-output", "missing-target", "failed-summary-write")
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory(prefix="rea-benchmark-digest-") as root:
                 directory = Path(root)
                 target = directory / "target"
                 target.write_bytes(b"original")
@@ -63,17 +65,43 @@ class BenchmarkCleanupTest(unittest.TestCase):
                 def prepare(_config, _lane, setup):
                     setup.mkdir()
                     return ["synthetic-agent"]
+                failure = (None if case in ("unchanged", "changed") else
+                           TimeoutError("Trial exceeded its limit") if case == "limit" else
+                           KeyboardInterrupt("Caller cancelled") if case == "cancelled" else
+                           CleanupIncomplete("Cleanup pending", object(), {"runId": "retained"}, object())
+                           if case == "pending-cleanup" else RuntimeError("Agent exited nonzero"))
+                changed = case != "unchanged"
                 def measured(_command, trial, **_options):
                     trial.mkdir()
-                    (trial / "stdout.log").write_text("")
+                    if case != "missing-output":
+                        events = [json.dumps({"usage": {"tokens": 3}}), json.dumps({"type": "item.completed",
+                            "item": {"type": "mcp_tool_call", "tool": "inspect", "status": "failed"}})]
+                        if case == "truncated-output":
+                            events.append('{"incomplete":')
+                        (trial / "stdout.log").write_text("\n".join(events))
                     if changed:
                         target.write_bytes(b"changed")
+                    if case == "missing-target":
+                        target.unlink()
+                    if failure is not None:
+                        raise failure
                     return {"exit_code": 0}
+                write_text = Path.write_text
+                def persist(path, *args, **kwargs):
+                    if case == "failed-summary-write" and path.name == "agent-summary.json":
+                        raise OSError("Injected summary persistence failure")
+                    return write_text(path, *args, **kwargs)
                 with patch("benchmark.agent_command", side_effect=prepare), \
                      patch("benchmark.measure", side_effect=measured) as trials, \
                      patch.object(sys, "argv", ["benchmark.py", str(config), "agent", "--trials", "2"]), \
+                     patch.object(Path, "write_text", persist), \
                      patch("builtins.print") as output:
-                    if changed:
+                    if failure is not None:
+                        with self.assertRaises(type(failure)) as raised:
+                            main()
+                        self.assertIs(raised.exception, failure)
+                        output.assert_not_called()
+                    elif changed:
                         with self.assertRaisesRegex(RuntimeError, "Target changed"):
                             main()
                         output.assert_not_called()
@@ -81,10 +109,25 @@ class BenchmarkCleanupTest(unittest.TestCase):
                         main()
                         self.assertEqual(output.call_count, 2)
                 self.assertEqual(trials.call_count, 1 if changed else 2)
+                if case == "failed-summary-write":
+                    self.assertIn("Injected summary persistence failure", failure.__notes__[0])
+                    continue
                 summary = json.loads((directory / "out/run/agent-synthetic-fixture-1/agent-summary.json").read_text())
                 self.assertEqual(summary["target_sha256_before"], hashlib.sha256(b"original").hexdigest())
-                self.assertEqual(summary["target_sha256_after"], hashlib.sha256(target.read_bytes()).hexdigest())
-                self.assertEqual(summary["correctness"], "artifact_changed" if changed else "requires_source_oracle_review")
+                if case in ("pending-cleanup", "missing-target"):
+                    self.assertIsNone(summary["target_sha256_after"])
+                    self.assertEqual(summary["correctness"], "unknown")
+                    self.assertIn("target_sha256_after_unknown_reason" if case == "pending-cleanup" else "summary_error", summary)
+                else:
+                    self.assertEqual(summary["target_sha256_after"], hashlib.sha256(target.read_bytes()).hexdigest())
+                    self.assertEqual(summary["correctness"], "artifact_changed" if changed else "requires_source_oracle_review")
+                self.assertEqual(summary["trial_status"], "failed" if failure is not None else "completed")
+                if case == "truncated-output":
+                    self.assertIn("summary_error", summary)
+                    self.assertTrue(failure.__notes__)
+                if case not in ("missing-target", "missing-output"):
+                    self.assertEqual(summary["usage"], [{"tokens": 3}])
+                    self.assertEqual(summary["calls"][0]["tool"], "inspect")
 
     def test_nonzero_trial_exit_stops_trials_after_recording_resources(self):
         with tempfile.TemporaryDirectory(prefix="rea-benchmark-exit-") as root:
