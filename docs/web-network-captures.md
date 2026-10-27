@@ -625,7 +625,8 @@ refused for them, as the manifest is not.
 
 Each `GET` tool whose template ends in a parameter is an item tool, and its
 type's `collection_template` is the template without that parameter; any other
-`GET` tool is a list tool of its own template. Empty segments are ignored, so a
+`GET` tool is a list tool of its own template. Interior empty segments remain
+meaningful: `/api/books` and `/api//books` name distinct collections. A single
 trailing slash names the same collection. An item tool proves its type's
 `id_field` when every initial response carries the requested path value in the
 same field of one entity object (`id_basis: "path-parameter"`). The object is
@@ -794,13 +795,7 @@ past those deleted before the capture. Two `made-object` rules agree in their
 clocks and own members, and a count only the later call shows starts at the
 first object's value. Members either call sent are accepted, only those every call sent are
 required, and an echoed member a call left out takes the value that call stored
-(`body.defaults`). A member a create sent empty (`""`, `null`, `false`, `[]` or
-`{}`), as a form sends a field left as it was, is not required: a call that
-leaves it out is applied as sending that value (`body.blank`), unless a call
-that left it out showed a default, which it then keeps. A call may send it as any
-recorded call sent it empty, even after a default is learned, and one leaving it
-out is applied as the earliest did, as when one create sent `false` and another
-`null`. A clock rule widens to `trimmed` only when no held entity or
+(`body.defaults`). A clock rule widens to `trimmed` only when no held entity or
 earlier call showed that clock at a fixed width. A later create that disagrees
 leaves the plan as it was. A create whose observed reference differs from the
 entity the plan rebuilds, whether or not it sent the reference member, is
