@@ -22,6 +22,8 @@ const { values } = parseArgs({
     repeats: { type: "string", default: "2" },
     variants: { type: "boolean", default: false },
     methods: { type: "string" },
+    detail: { type: "string" },
+    proof: { type: "boolean", default: false },
   },
 });
 for (const name of [
@@ -67,7 +69,7 @@ const transport = new StdioClientTransport({
     NODE_OPTIONS: "--max-old-space-size=3072",
     UV_THREADPOOL_SIZE: "2",
     REA_LOG_LEVEL: "silent",
-    REA_MCP_TOOL_FAMILIES: "android",
+    REA_MCP_TOOL_FAMILIES: values.proof ? "android,session" : "android",
     REA_MCP_INPUT_SCHEMA_PROFILE: "compact",
   },
   stderr: "pipe",
@@ -88,7 +90,11 @@ try {
   await writeFile(join(output, "catalog.json"), JSON.stringify(catalog));
   const ajv = new Ajv2020({ strict: false, validateFormats: false });
   const contracts = new Map();
-  for (const name of ["inspect_android_class", "inspect_android_method"]) {
+  for (const name of [
+    "inspect_android_class",
+    "inspect_android_method",
+    ...(values.proof ? ["export_evidence_bundle"] : []),
+  ]) {
     const definitions = catalog.tools.filter((tool) => tool.name === name);
     assert.equal(definitions.length, 1);
     assert.ok(definitions[0].outputSchema);
@@ -97,7 +103,15 @@ try {
       validate: ajv.compile(definitions[0].outputSchema),
     });
   }
-  const invoke = async (name, args) => {
+  const parents = [];
+  assert.ok(values.detail === undefined || values.detail === "summary");
+  const invoke = async (name, input) => {
+    const args = {
+      ...input,
+      ...(name !== "export_evidence_bundle" && values.detail !== undefined
+        ? { detail: values.detail }
+        : {}),
+    };
     const contract = contracts.get(name),
       start = performance.now();
     const result = await client.callTool(
@@ -112,9 +126,26 @@ try {
       JSON.stringify(contract.validate.errors),
     );
     const evidence = result.structuredContent;
+    if (name === "export_evidence_bundle") return evidence;
     assert.equal(evidence.subject.digest.sha256, targetSha);
-    assert.equal(evidence.parameters.mapping_path, args.mapping_path);
-    const report = evidence.normalized_result.mapping;
+    const projection = evidence.normalized_result;
+    const normalized =
+      values.detail === "summary" ? projection.summary : projection;
+    if (values.detail === "summary") {
+      assert.equal(evidence.operation, "inspect_analysis_view");
+      assert.equal(evidence.raw_result, null);
+      assert.equal(projection.parent_operation, name);
+    } else assert.equal(evidence.parameters.mapping_path, args.mapping_path);
+    parents.push({
+      id:
+        values.detail === "summary"
+          ? projection.parent_evidence_id
+          : evidence.evidence_id,
+      name,
+      args,
+      normalized,
+    });
+    const report = normalized.mapping;
     assert.equal(report.association, "caller-selected");
     assert.equal(report.file.path, args.mapping_path);
     assert.equal(report.file.sha256, await sha256(args.mapping_path));
@@ -124,7 +155,7 @@ try {
         report.coverage.unmapped,
       report.coverage.symbols,
     );
-    return evidence.normalized_result;
+    return normalized;
   };
   const raw = values.oracle
     ? JSON.parse(await readFile(values.oracle, "utf8"))
@@ -170,6 +201,7 @@ try {
   for (let pass = 0; pass < repeats; pass++) {
     const firstCall = calls.length,
       start = performance.now();
+    const firstParent = parents.length;
     for (const class_name of selected) {
       const result = await invoke("inspect_android_class", {
         path: target,
@@ -252,6 +284,25 @@ try {
           );
       assert.equal(fields.length, dex.fields.length);
       assert.equal(methods.length, dex.methods.length);
+    }
+    if (values.proof) {
+      const path = join(output, `pass-${pass}-evidence.json`);
+      await invoke("export_evidence_bundle", { path });
+      const bundle = JSON.parse(await readFile(path, "utf8"));
+      for (const expected of parents.slice(firstParent)) {
+        const parent = bundle.records.find(
+          (record) => record.evidence_id === expected.id,
+        );
+        assert.ok(parent, "Complete source Evidence must remain exportable");
+        assert.equal(parent.operation, expected.name);
+        assert.equal(parent.subject.digest.sha256, targetSha);
+        assert.equal(
+          parent.parameters.mapping_path,
+          expected.args.mapping_path,
+        );
+        assert.deepEqual(parent.normalized_result, expected.normalized);
+        assert.notEqual(parent.raw_result, null);
+      }
     }
     runs.push({
       temperature: pass === 0 ? "cold-provider" : "warm-session",

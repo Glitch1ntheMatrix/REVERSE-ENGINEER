@@ -293,17 +293,33 @@ build's `mapping.txt` with `mapping_path` on `inspect_android_class` or
 `inspect_android_method`, or `--mapping-path` on the matching CLI command:
 
 ```sh
-rea inspect-android-class /path/Example.apk a.b --mapping-path /path/mapping.txt
+rea inspect-android-class /path/Example.apk a.b --mapping-path /path/mapping.txt \
+  --detail summary --evidence_output /tmp/class-evidence.json
 ```
 
-The path must be absolute. Selectors still take the observed names, such as
+For agent workflows, select `detail: "summary"` on class and method inspection.
+It preserves the complete normalized member inventory or selected method body,
+including mapping annotations, while retaining duplicate raw provider calls in
+the complete parent Evidence. The reply links that parent's identity and digest;
+export it with `export_evidence_bundle` or read its summary again through
+`inspect_analysis_view`. CLI summaries require `--evidence_output` and return
+the portable bundle path. Omitted or `complete` detail preserves complete inline
+Evidence. Search and reference operations retain their existing contracts.
+Symbol summary views admit at most **1 MiB**, including view context. An admitted
+method's source can already consume that amount; a larger combined summary
+fails explicitly instead of silently truncating facts. MCP refusal includes
+the retained parent ID. Select complete detail, or inspect one method rather
+than a whole class, when the requested summary does not fit.
+
+The mapping path must be absolute. Selectors still take the observed names, such as
 `a.b`, and observed rows are unchanged. The result adds one `mapping` block with
 the file's path, SHA-256 and size, the header values the file reports
 (`compiler`, `compiler_version`, `min_api`, `map_version`, `pg_map_id`,
 `pg_map_hash`), valid record counts and up to 16 malformed line samples. Its
 `symbols` list has one entry per observed class, inner class, method and field;
 `inspect_android_method` lists the class and the selected method. `coverage`
-counts each resolution status.
+counts each resolution status. With summary delivery, these unchanged facts are
+under the view's `summary` field; the view separately reports source coverage.
 
 Lookups use the bridge's raw DEX names, not JADX display aliases such as a
 renamed reserved word. Each symbol resolves as:
@@ -555,6 +571,8 @@ by byte length and digest with fixed parser options. Identical bytes reuse that
 index; changed bytes are reparsed, missing files still fail, and each response
 preserves the currently selected path. The index is released on provider idle
 retirement or close. Omitting `mapping_path` never applies the cached mapping.
+During replacement, the old index can coexist with the new parse until it
+succeeds; these transient allocations count toward process memory.
 
 Before retaining records, the parser admits an estimated **128 MiB** index
 representation and **8 MiB** of expanded mapped claims per residual class,

@@ -504,8 +504,8 @@ export class JadxProvider implements AndroidAnalysisPort {
       options.signal === undefined
         ? timeout
         : AbortSignal.any([options.signal, timeout]);
-    // The mapping is read inside the turn and under the deadline, so one
-    // parsed mapping is held at a time and a slow read cannot hold the queue.
+    // Mapping reads and cache replacements are serialized under the deadline.
+    // A replacement parse can briefly coexist with the previous cached index.
     // Its failure is the caller's input and returns before any session work.
     const mapping = await this.#readMapping(request, signal, {
       timeout,

@@ -1,13 +1,17 @@
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { createHash } from "node:crypto";
-import { readFile, truncate, writeFile } from "node:fs/promises";
+import { readFile, truncate, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, it as test, onTestFinished } from "vitest";
 import { z } from "zod";
 import { ANDROID_TOOL_CONTRACTS } from "../../../src/contracts/android/androidToolContracts.js";
 import { ANDROID_MAPPING_LIMITS } from "../../../src/domain/android/androidMapping.js";
 import { androidResultSchemas } from "../../../src/domain/android/androidAnalysis.js";
+import {
+  androidClassSummaryViewResultSchema,
+  androidMethodSummaryViewResultSchema,
+} from "../../../src/domain/analysisView/analysisView.js";
 import { parseEvidence } from "../../../src/domain/evidence.js";
 import { createServer } from "../../../src/server/createServer.js";
 import { createTestBinarySession } from "../../fixtures/binarySession.js";
@@ -25,7 +29,10 @@ const connect = async () => {
   });
   const server = createServer(
     { kind: "session", session },
-    { androidAnalysis: fixture.provider },
+    {
+      androidAnalysis: fixture.provider,
+      environment: { REA_MCP_TOOL_FAMILIES: "android,application,session" },
+    },
   );
   const client = new Client({
     name: "android-mapping-regression",
@@ -49,7 +56,7 @@ const connect = async () => {
         mapping_path,
       },
     });
-  return { ...fixture, client, inspect };
+  return { ...fixture, client, inspect, session };
 };
 
 const mappingText = (original: string) =>
@@ -61,6 +68,73 @@ const mappingText = (original: string) =>
     "    void pick(java.lang.String) -> choose",
     "    void pick(int) -> choose",
   ].join("\n");
+
+it("keeps exact class and selected-method facts in summaries with readable complete parents after source removal", async () => {
+  const { apk, client, session, launches } = await connect();
+  const root = await createTestTempDirectory("rea-android-mapping-summary-");
+  const mapping_path = join(root, "mapping.txt");
+  await writeFile(mapping_path, mappingText("com.example.Original"));
+  const catalog = (await client.listTools()).tools;
+  const parents = [];
+  for (const name of [
+    "inspect_android_class",
+    "inspect_android_method",
+  ] as const) {
+    const definition = catalog.find((tool) => tool.name === name);
+    if (definition?.outputSchema === undefined)
+      throw new Error(`Missing ${name} schema`);
+    const validate = new Ajv2020({
+      strict: false,
+      validateFormats: false,
+    }).compile(
+      z.record(z.string(), z.unknown()).parse(definition.outputSchema),
+    );
+    const args = {
+      path: apk,
+      class_name: "fixture.Target",
+      mapping_path,
+      detail: "summary",
+      ...(name === "inspect_android_method"
+        ? { method_name: "choose", overload_index: 1 }
+        : {}),
+    };
+    const response = await client.callTool({ name, arguments: args });
+    expect(response.isError, JSON.stringify(response)).not.toBe(true);
+    expect(
+      validate(response.structuredContent),
+      JSON.stringify(validate.errors),
+    ).toBe(true);
+    const evidence = parseEvidence(response.structuredContent);
+    expect(evidence.operation).toBe("inspect_analysis_view");
+    expect(evidence.raw_result).toBeNull();
+    const result = (
+      name === "inspect_android_class"
+        ? androidClassSummaryViewResultSchema
+        : androidMethodSummaryViewResultSchema
+    ).parse(evidence.normalized_result);
+    const parent = session.evidenceById(result.parent_evidence_id);
+    if (parent === undefined)
+      throw new Error("Complete source was not retained");
+    expect(parent.operation).toBe(name);
+    expect(parent.raw_result).not.toBeNull();
+    expect(result.summary).toEqual(parent.normalized_result);
+    parents.push(parent.evidence_id);
+  }
+  await unlink(apk);
+  await unlink(mapping_path);
+  for (const evidence_id of parents) {
+    const retained = await client.callTool({
+      name: "inspect_analysis_view",
+      arguments: {
+        source: { kind: "retained-evidence", evidence_id },
+        view: { kind: "summary" },
+      },
+    });
+    expect(retained.isError, JSON.stringify(retained)).not.toBe(true);
+    expect(parseEvidence(retained.structuredContent).raw_result).toBeNull();
+  }
+  expect(launches).toHaveLength(1);
+});
 
 it("annotates class inspection with a caller-selected mapping and reuses one engine", async () => {
   const { apk, client, inspect, launches } = await connect();

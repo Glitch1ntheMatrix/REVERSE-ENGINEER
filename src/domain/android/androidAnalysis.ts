@@ -78,6 +78,16 @@ export const androidPackageInspectionInputSchema =
     })
     .superRefine(validateAndroidPackageDelivery);
 
+/** Delivery is an adapter/application choice, never a provider analysis option. */
+export const androidSymbolInspectionInputSchemas = {
+  inspect_android_class: androidInputSchemas.inspect_android_class.extend({
+    detail: z.enum(["complete", "summary"]).optional(),
+  }),
+  inspect_android_method: androidInputSchemas.inspect_android_method.extend({
+    detail: z.enum(["complete", "summary"]).optional(),
+  }),
+} as const;
+
 /** Supported static Android operations. */
 export type AndroidOperation = keyof typeof androidInputSchemas;
 /** Validated Android requests carry their selected operation. */
@@ -117,7 +127,6 @@ const textCoverage = z.strictObject({
   text: z.string(),
   reported_total_bytes: z.int().nonnegative().nullable(),
 });
-
 
 const integral = <Type extends string>(type: Type, min: number, max: number) =>
   z.strictObject({

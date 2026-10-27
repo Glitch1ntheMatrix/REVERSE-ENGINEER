@@ -38,7 +38,9 @@ def inspect(path, encoding):
                      "argument_tokens": args, "text_reply_tokens": text,
                      "whole_task_text_tokens": count(question) + count(compact(inputs)) + args + text,
                      "sdk_catalog_and_calls_tokens": count(compact({"catalog": catalog, "calls": wire}))})
-        facts.append([call["result"]["structuredContent"]["normalized_result"] for call in selected])
+        normalized = [call["result"]["structuredContent"]["normalized_result"]
+                      for call in selected if call["name"] != "export_evidence_bundle"]
+        facts.append([value["summary"] if value.get("kind") == "summary" else value for value in normalized])
     return {**summary, "case": str(path), "runs": runs,
             "normalized_fact_sha256": hashlib.sha256(compact(facts).encode()).hexdigest(),
             "receipts_sha256": {name: hashlib.sha256((path / name).read_bytes()).hexdigest()
@@ -54,7 +56,7 @@ def main():
     records = [inspect(path, encoding) for path in args.cases]
     args.output.write_text(json.dumps({"tokenizer": f"tiktoken {tiktoken.__version__}",
         "encoding": encoding.name,
-        "scope": "Each run counts a fixed question, discovered input catalog once, all arguments and text replies. SDK totals additionally count output schemas and structuredContent duplicates. All replies contain complete Evidence; no separate proof export is needed. Model billing, hidden prompts, catalog pruning and replay are unmeasured.",
+        "scope": "Each run counts a fixed question, discovered input catalog once, all arguments and text replies, including proof exports when selected. SDK totals additionally count output schemas and structuredContent duplicates. Summary runs verify complete parent Evidence in the exported bundle. Model billing, hidden prompts, catalog pruning and replay are unmeasured.",
         "actual_model_usage": None, "records": records}, indent=2) + "\n")
 
 

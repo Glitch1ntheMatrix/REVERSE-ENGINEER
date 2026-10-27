@@ -14,7 +14,11 @@ Choose an `overload_index` from the class inventory when methods are ambiguous
 instead of guessing.
 
 For an R8/ProGuard release build with its `mapping.txt`, pass the absolute
-`mapping_path` to `inspect_android_class` or `inspect_android_method`. Keep
+`mapping_path` to `inspect_android_class` or `inspect_android_method`. Prefer
+`detail: "summary"` to receive normalized symbols or the selected body without
+duplicate raw class metadata. Complete Evidence stays retained under the linked
+parent ID and can be exported; CLI summary delivery requires `--evidence_output`.
+Omitted or complete detail preserves the full inline response. Keep
 selecting by observed names; the separate `mapping` block reports each symbol
 as `mapped`, `ambiguous` or `unmapped` after checking DEX types and prototypes.
 REA does not verify that the mapping belongs to the APK build.
