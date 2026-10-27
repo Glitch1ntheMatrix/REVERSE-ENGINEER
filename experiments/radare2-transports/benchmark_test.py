@@ -1,5 +1,6 @@
 """Real synthetic process trees; no Codex or reverse-engineering engine runs."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -28,6 +29,42 @@ if sys.argv[1] != 'exit': time.sleep(30)
 
 
 class BenchmarkCleanupTest(unittest.TestCase):
+    def test_agent_digest_mismatch_retains_both_hashes_and_stops_trials(self):
+        for changed in (False, True):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory(prefix="rea-benchmark-digest-") as root:
+                directory = Path(root)
+                target = directory / "target"
+                target.write_bytes(b"original")
+                config = directory / "config.json"
+                config.write_text(json.dumps({"node": "node", "model": "fixture", "reasoning": "low",
+                    "lanes": ["fixture"], "targets": [{"id": "synthetic", "path": str(target), "prompt": "inspect"}],
+                    "output": str(directory / "out")}))
+                def prepare(_config, _lane, setup):
+                    setup.mkdir()
+                    return ["synthetic-agent"]
+                def measured(_command, trial, **_options):
+                    trial.mkdir()
+                    (trial / "stdout.log").write_text("")
+                    if changed:
+                        target.write_bytes(b"changed")
+                    return {"exit_code": 0}
+                with patch("benchmark.agent_command", side_effect=prepare), \
+                     patch("benchmark.measure", side_effect=measured) as trials, \
+                     patch.object(sys, "argv", ["benchmark.py", str(config), "agent", "--trials", "2"]), \
+                     patch("builtins.print") as output:
+                    if changed:
+                        with self.assertRaisesRegex(RuntimeError, "Target changed"):
+                            main()
+                        output.assert_not_called()
+                    else:
+                        main()
+                        self.assertEqual(output.call_count, 2)
+                self.assertEqual(trials.call_count, 1 if changed else 2)
+                summary = json.loads((directory / "out/run/agent-synthetic-fixture-1/agent-summary.json").read_text())
+                self.assertEqual(summary["target_sha256_before"], hashlib.sha256(b"original").hexdigest())
+                self.assertEqual(summary["target_sha256_after"], hashlib.sha256(target.read_bytes()).hexdigest())
+                self.assertEqual(summary["correctness"], "artifact_changed" if changed else "requires_source_oracle_review")
+
     def test_nonzero_trial_exit_stops_trials_after_recording_resources(self):
         with tempfile.TemporaryDirectory(prefix="rea-benchmark-exit-") as root:
             directory = Path(root)

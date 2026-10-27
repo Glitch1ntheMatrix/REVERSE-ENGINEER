@@ -410,6 +410,7 @@ def main():
                     (setup / "prompt.txt").write_text(prompt)
                     before_digest = hashlib.sha256(Path(target["path"]).read_bytes()).hexdigest()
                     result = measure(command, directory, prompt=prompt, timeout=600, node=config["node"])
+                    after_digest = hashlib.sha256(Path(target["path"]).read_bytes()).hexdigest()
                     usage = []
                     calls = []
                     events = directory / "stdout.log"
@@ -425,9 +426,11 @@ def main():
                         "usage": usage, "calls": calls,
                         "answer_path": str(setup / "answer.txt"),
                         "target_sha256_before": before_digest,
-                        "target_sha256_after": hashlib.sha256(Path(target["path"]).read_bytes()).hexdigest(),
-                        "correctness": "requires_source_oracle_review",
+                        "target_sha256_after": after_digest,
+                        "correctness": "requires_source_oracle_review" if before_digest == after_digest else "artifact_changed",
                     }, indent=2) + "\n")
+                    if before_digest != after_digest:
+                        raise RuntimeError("Target changed during agent trial; stopping trials: " + target["path"])
                 print(json.dumps({"mode": args.mode, "target": target["id"], "lane": lane,
                                   "trial": trial + 1, **result}), flush=True)
 
