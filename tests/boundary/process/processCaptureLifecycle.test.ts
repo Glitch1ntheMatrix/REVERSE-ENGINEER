@@ -5,6 +5,7 @@ import {
   mkdir,
   readFile,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -399,11 +400,18 @@ itWithCaptureCapability(
     const projected = projectAnalysisError(result.error);
     expect(projected).toMatchObject({
       code: "cleanup_incomplete",
-      details: {
-        cleanup: "incomplete",
-        resources: ["owned_process_group", "temporary_root"],
-      },
+      details: { cleanup: "incomplete" },
     });
+    const resources = projected.details?.["resources"];
+    if (!Array.isArray(resources) || resources.length !== 2)
+      throw new Error("expected both unresolved cleanup resources");
+    expect(resources[0]).toBe("owned_process_group");
+    const retainedRoot = resources[1];
+    if (typeof retainedRoot !== "string")
+      throw new Error("expected the retained capture root");
+    // The retained root is reported by path so an operator can inspect it.
+    expect((await stat(retainedRoot)).isDirectory()).toBe(true);
+    await rm(retainedRoot, { recursive: true, force: true });
     expect(projected).not.toHaveProperty("stack");
     expect(projected).not.toHaveProperty("cause");
     expect(partial).toBeDefined();
