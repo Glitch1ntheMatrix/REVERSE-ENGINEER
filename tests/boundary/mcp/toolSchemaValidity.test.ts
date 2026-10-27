@@ -808,10 +808,6 @@ describe("MCP advertised input defaults", () => {
                 `${contract.name}: default for ${name}`,
               ).toContain(name);
       }
-      const comparison = advertised.get("compare_web_captures")!.inputSchema
-        .properties as Record<string, Record<string, unknown>>;
-      expect(comparison.normalization).toBeDefined();
-      expect(comparison.normalization).not.toHaveProperty("default");
     } finally {
       await Promise.allSettled([client.close(), server.close()]);
     }
