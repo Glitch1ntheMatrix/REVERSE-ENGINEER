@@ -3,6 +3,8 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { createHash } from "node:crypto";
+import { pe } from "../../../src/domain/binaryTarget.fixture.js";
+import { AnalysisUnsupportedTargetError } from "../../../src/domain/analysisErrorCore.js";
 import { parseEvidence } from "../../../src/domain/evidence.js";
 import { gpuCodeObjectsPartialSchema } from "../../../src/domain/gpu/gpuCodeObjects.js";
 import { GpuCodeObjectsProvider } from "../../../src/gpu/GpuCodeObjectsProvider.js";
@@ -1218,4 +1220,12 @@ it("refuses escaped PTX report expansion while preserving bounded interrupted fa
   expect(partial.ptx_artifacts).toEqual([]);
   expect(partial.objects).toHaveLength(1);
   expect(partial.artifact.sha256).toBeNull();
+});
+
+it("reports a confirmed overlapping PE header as unsupported through the provider", async () => {
+  const result = await inspect(pe(0x014c, 4));
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error("Expected an unsupported PE layout");
+  expect(result.error).toBeInstanceOf(AnalysisUnsupportedTargetError);
+  expect(result.error.message).toContain("overlapping PE header");
 });
