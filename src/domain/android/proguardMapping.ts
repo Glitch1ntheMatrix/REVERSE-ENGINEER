@@ -52,6 +52,11 @@ interface MemberRecord<Mapped> {
   residual: string | undefined;
   residualConflict: boolean;
 }
+interface MethodIdentityRecords {
+  /** A missing signature always merges into the earliest record. */
+  readonly first: MemberRecord<MappedMethod>;
+  readonly byResidual: Map<string, MemberRecord<MappedMethod>>;
+}
 interface ClassRecord {
   readonly name: string;
   readonly residualName: string;
@@ -59,7 +64,7 @@ interface ClassRecord {
   /** Outermost frames only, deduplicated across line-range splits. */
   readonly methods: Map<string, MemberRecord<MappedMethod>[]>;
   /** `methods` entries keyed by obfuscated name and original identity. */
-  readonly methodIndex: Map<string, MemberRecord<MappedMethod>[]>;
+  readonly methodIndex: Map<string, MethodIdentityRecords>;
 }
 
 /** Facts parsed from one R8/ProGuard mapping file. */
@@ -74,8 +79,8 @@ export interface ProguardMapping {
   };
   /** Class records keyed by residual (obfuscated) binary name. */
   readonly classes: ReadonlyMap<string, readonly ClassRecord[]>;
-  /** Residual binary names recorded for each original class. */
-  readonly residualNames: ReadonlyMap<string, readonly string[]>;
+  /** One agreed residual binary name per original class; null means conflict. */
+  readonly residualAliases: ReadonlyMap<string, string | null>;
   readonly records: {
     readonly classes: number;
     readonly fields: number;
@@ -176,7 +181,7 @@ interface ParseState {
     -readonly [Key in keyof ProguardMapping["reported"]]: string | null;
   };
   readonly classes: Map<string, ClassRecord[]>;
-  readonly residualNames: Map<string, string[]>;
+  readonly residualAliases: Map<string, string | null>;
   readonly records: {
     classes: number;
     fields: number;
@@ -330,18 +335,18 @@ const closeGroup = (state: ParseState): void => {
   state.group = undefined;
   if (group === undefined) return;
   const key = methodKey(group.obfuscated, group.outermost, group.record.name);
-  const same = group.record.methodIndex
-    .get(key)
-    ?.find(
-      (candidate) =>
-        candidate.residual === undefined ||
-        group.residual === undefined ||
-        candidate.residual === group.residual,
-    );
+  const indexed = group.record.methodIndex.get(key);
+  const same =
+    indexed === undefined
+      ? undefined
+      : group.residual === undefined || indexed.first.residual === undefined
+        ? indexed.first
+        : indexed.byResidual.get(group.residual);
   if (same !== undefined) {
     if (same.residual === undefined && group.residual !== undefined) {
       if (!chargeIndex(state, stringBytes(group.residual), group.line)) return;
       same.residual = ownString(group.residual);
+      indexed?.byResidual.set(same.residual, same);
     }
     same.residualConflict ||= group.residualConflict;
     return;
@@ -350,7 +355,7 @@ const closeGroup = (state: ParseState): void => {
     memberIndexBytes(group.outermost, group.record.name) +
     stringBytes(key) +
     stringBytes(group.obfuscated) +
-    192 +
+    384 +
     (group.residual === undefined ? 0 : stringBytes(group.residual));
   if (
     !chargeIndex(state, bytes, group.line) ||
@@ -375,7 +380,11 @@ const closeGroup = (state: ParseState): void => {
     residualConflict: group.residualConflict,
   };
   append(group.record.methods, ownString(group.obfuscated), record);
-  append(group.record.methodIndex, ownString(key), record);
+  const identity = indexed ?? { first: record, byResidual: new Map() };
+  if (record.residual !== undefined)
+    identity.byResidual.set(record.residual, record);
+  if (indexed === undefined)
+    group.record.methodIndex.set(ownString(key), identity);
 };
 
 const parseClassLine = (state: ParseState, line: string, number: number) => {
@@ -408,7 +417,11 @@ const parseClassLine = (state: ParseState, line: string, number: number) => {
   state.current = record;
   state.records.classes++;
   append(state.classes, record.residualName, record);
-  append(state.residualNames, record.name, record.residualName);
+  const alias = state.residualAliases.get(record.name);
+  if (alias === undefined)
+    state.residualAliases.set(record.name, record.residualName);
+  else if (alias !== record.residualName)
+    state.residualAliases.set(record.name, null);
 };
 
 const parseField = (state: ParseState, record: ClassRecord, line: string) => {
@@ -681,7 +694,7 @@ export const parseProguardMapping = (
       pg_map_hash: null,
     },
     classes: new Map(),
-    residualNames: new Map(),
+    residualAliases: new Map(),
     records: { classes: 0, fields: 0, methods: 0, malformed: 0 },
     malformed: [],
     current: undefined,
@@ -707,7 +720,7 @@ export const parseProguardMapping = (
   return ok({
     reported: state.reported,
     classes: state.classes,
-    residualNames: state.residualNames,
+    residualAliases: state.residualAliases,
     records: state.records,
     malformed: state.malformed,
   });
@@ -730,15 +743,9 @@ const residualType = (
   const primitive = DEX_PRIMITIVES.get(element);
   if (primitive !== undefined)
     return { dimensions, element: primitive, className: false };
-  const aliases = mapping.residualNames.get(element);
-  let residual = element;
-  if (aliases !== undefined) {
-    const first = aliases[0];
-    if (first === undefined) return undefined;
-    for (const alias of aliases) if (alias !== first) return undefined;
-    residual = first;
-  }
-  return { dimensions, element: residual, className: true };
+  const alias = mapping.residualAliases.get(element);
+  if (alias === null) return undefined;
+  return { dimensions, element: alias ?? element, className: true };
 };
 
 /** Translate one original Java type to its residual DEX type, if verifiable. */

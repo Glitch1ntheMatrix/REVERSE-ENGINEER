@@ -181,6 +181,108 @@ Normalized investigation digests match exactly across all before/after lanes:
 - Source fixture: `ec76d1e086c8561370fc1ed5dfef67bb88b185e8fb57c7e30afe9f1f153634eb`.
 - Conscrypt: `7ebf70795dfc23bf2b0d0e813837325fa221f15560ca2384fdb06f26d69d78a5`.
 
+## Post-review ownership and final workflow confirmation
+
+Greptile found three concrete boundaries subsequently fixed in
+`160573cb36f478a088b8a5284fa571cd97dc9a86`: translated prototypes could expand
+before comparison; a warm request without a mapping could bypass a pending
+mapping descriptor's cleanup; and timeout classification inspected the outer
+cleanup wrapper. Type matching now compares incrementally within the observed
+descriptor, retained file cleanup gates shared request admission and idle
+retirement independently of engine cleanup, and the first interruption is
+classified before cleanup composition. All 126 related cases pass serially:
+55 parser, five file-reader, four first-cause/close outcomes, three cleanup,
+52 session/idle/cleanup and seven MCP mapping cases.
+
+A separate bounded diagnostic found and corrected source-string retention.
+On Node 24.22.1/V8 13.6.233.17-node.58, four small selected class/method results
+from four distinct mappings containing 10 MiB of ignored comments each retained
+41,944,028 extra external string bytes through the actual immutable Evidence
+ledger. Clearing it released that backing; detached-string controls retained
+zero extra external bytes. The parser now owns admitted UTF-16 strings once,
+sharing section names and copying only retained outermost/deduplicated facts.
+It preserves lone surrogate code units and never clones the entire index or
+copies names per lookup. The identical post-fix ledger experiment retained
+zero extra external bytes; its RSS delta was 151,552 bytes, versus 62,898,176
+before. These are engine-specific observations, not portable heap guarantees.
+The unchanged Evidence/ledger modules and changed parser are fingerprinted by
+[the diagnostic](https://github.com/morluto/rea/blob/main/tests/support/analysis-efficiency/android-mapping-retention.mjs).
+Before/after whole diagnostic costs were 2.995/2.582 seconds, CPU 4.976/4.382
+seconds and peak sampled family RSS 145,903,616/113,287,168 bytes, with explicit
+256 MiB old-space selection and a 1 GiB family guard.
+
+Final equivalent Conscrypt investigations compare the integrated unoptimized
+control `5ecc6ccc662678c00a45bd171f40798634774155` with fixed `160573cb3`, both
+on main `e99b6c2c3bcc5f4f050b51b432145144d0d47dc0`, using the same artifacts,
+facts, seven calls including full proof export, and before/after/after/before
+order. Every normal-fact digest remains
+`7ebf70795dfc23bf2b0d0e813837325fa221f15560ca2384fdb06f26d69d78a5`.
+The final source-fixture summary/proof/negative qualification also passes all
+43 calls from the maintained harness path.
+
+| Final cohort      | First s |       Warm s | Whole s |  CPU s | Peak family MiB | Warm text estimate |
+| ----------------- | ------: | -----------: | ------: | -----: | --------------: | -----------------: |
+| conscrypt-before  |   7.187 | 1.027, 1.006 |  12.370 | 17.307 |           917.7 |            177,855 |
+| conscrypt-after   |   7.376 | 0.813, 0.866 |  12.402 | 17.522 |           868.7 |             69,819 |
+| conscrypt-after2  |   6.878 | 0.707, 0.726 |  11.439 | 16.383 |           883.4 |             69,902 |
+| conscrypt-before2 |   7.111 | 0.989, 1.186 |  12.566 | 17.479 |           930.1 |            177,719 |
+
+The final warm ranges were 0.989–1.186 seconds before and 0.707–0.866 after;
+text estimates remain about 61% lower, ~177.7–177.9k to ~69.8–69.9k. Whole-task
+and cold samples overlap and are retained alongside the original cohort above;
+these measurements do not establish a general startup or memory advantage.
+
+### Follow-up complexity review
+
+Two additional review findings exposed repeated linear work despite bounded
+retention. The parsed owner now records one agreed residual alias (or explicit
+conflict) per original type, while preserving every class record and its count.
+Method identities have a direct residual-signature index; missing signatures
+still merge into the first record, including the initial unsigned-to-signed
+transition. Superseded alias arrays and candidate searches were removed.
+The representation allowance includes the new index containers/entries.
+
+The reproducible
+[complexity diagnostic](https://github.com/morluto/rea/blob/main/tests/support/analysis-efficiency/android-mapping-complexity.mjs)
+compares the built parser from `160573cb3` with the follow-up parser SHA-256
+`9c4c24f7a10a17b8ec08e74b2588b9ba87bc30f3e3d16690c3e07c03fbce233b`.
+The copied before module only rewrites its three unchanged dependency imports
+to absolute URLs. Each scenario verifies late matches, counts and answer digest;
+answers match across revisions. Node 24.22.1, two CPUs, 512 MiB old space,
+8 GiB sampled family guard, one before/after trial per size:
+
+| Scenario                                              | Revision | Parse ms | Lookup ms | Whole s | CPU s | Peak family MiB |
+| ----------------------------------------------------- | -------- | -------: | --------: | ------: | ----: | --------------: |
+| 20k identical aliases, 1k candidates × 255 parameters | before   |   212.60 |   5169.61 |   5.635 | 5.690 |           149.3 |
+| same                                                  | after    |   207.31 |     22.84 |   0.449 | 0.559 |           117.1 |
+| 40k distinct signatures of one original method        | before   |  8032.93 |      5.70 |   8.300 | 8.371 |           117.5 |
+| same                                                  | after    |   321.58 |      5.43 |   0.562 | 0.532 |           117.8 |
+
+The smaller alias cohort (1k aliases, otherwise identical) looked up in
+289.18/24.64 ms before/after. The smaller signature cohort (10k) parsed in
+785.65/89.68 ms. These synthetic cases establish removal of the reported
+growth, not universal latency or memory gains; they involve no agent tokens.
+All 60 parser, two report and seven public MCP mapping cases pass serially,
+along with type/lint/build (79.084 s, CPU 110.273 s, peak family 4393.9 MiB).
+
+The final indexed implementation also passes the real source fixture's
+43 summary/proof/negative calls (13.838 s, CPU 18.212 s, peak 797.5 MiB),
+and the Conscrypt 21-call investigation including proof export. The latter's
+normal-fact digest remains the value above: first task 7.670 s, warm tasks
+0.860/0.981 s, whole 12.706 s, CPU 17.870 s, peak 868.8 MiB. Warm whole-task
+text estimates are 69,940, SDK-inclusive 217,975; tokenizer/scope remain the
+same. Complete class/method facts and provenance remain accessible.
+
+For CI head `160573cb3`, all failed/cancelled shard logs and source-test logs
+were audited. Its executed merge `ee2398458bd8c56666ecaf120c1c3c21f350eea4`
+uses main parent `0676ad254c206871e0f4b120ba300cbbf9383b62`. The 90 observed
+failed test identities were selected on a pristine worktree at that exact
+parent: 88 reproduced in the primary run (128.320 s, CPU 147.775 s, peak
+2593.3 MiB), then the two newline-bearing ZCode titles reproduced in an exact
+follow-up (2.388 s, CPU 2.788 s, peak 416.9 MiB). No feature code was present
+in either control. These are baseline failures; cancelled cases without a
+completed result remain unverified by CI, with local verification above.
+
 ## Executed verification and limits
 
 - Parser/reader/protocol/provider mapping regressions cover raw names, exact

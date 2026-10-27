@@ -407,6 +407,108 @@ it("preserves alias uncertainty and identical aliases during direct member compa
   ).toMatchObject({ status: "mapped" });
 });
 
+it("resolves many repeated aliases without losing duplicate class evidence", () => {
+  const count = 20_000;
+  const parameters = Array.from({ length: 255 }, () => "T").join(",");
+  const repeated = parse(
+    [
+      ...Array.from({ length: count }, () => "T -> t:"),
+      "Owner -> a:",
+      ...Array.from(
+        { length: 1_000 },
+        (_, index) => `    void candidate${index}(${parameters}) -> m`,
+      ),
+    ].join("\n"),
+  );
+  expect(repeated.records.classes).toBe(count + 1);
+  expect(resolveProguardClass(repeated, "t")).toMatchObject({
+    status: "ambiguous",
+    candidate_count: count,
+  });
+  expect(
+    resolveProguardMethod(repeated, {
+      className: "a",
+      name: "m",
+      descriptor: `(${"Lt;".repeat(255)})V`,
+    }),
+  ).toMatchObject({ status: "ambiguous", candidate_count: 1_000 });
+});
+
+it("keeps a conflicting alias unknown even after many later agreeing records", () => {
+  const conflict = parse(
+    [
+      "T -> x:",
+      "T -> y:",
+      ...Array.from({ length: 100 }, () => "T -> x:"),
+    ].join("\n"),
+  );
+  expect(residualDexType(conflict, "T")).toBeUndefined();
+});
+
+it("indexes many distinct residual signatures without merging away late candidates", () => {
+  const count = 40_000;
+  const many = parse(
+    [
+      "Owner -> a:",
+      ...Array.from(
+        { length: count },
+        (_, index) =>
+          `    void run() -> m\n    # {"id":"com.android.tools.r8.residualsignature","signature":"()Lr${index};"}`,
+      ),
+    ].join("\n"),
+  );
+  expect(many.records.methods).toBe(count);
+  expect(
+    resolveProguardMethod(many, {
+      className: "a",
+      name: "m",
+      descriptor: "()Lr39999;",
+    }),
+  ).toMatchObject({ status: "mapped", mapped: { name: "run" } });
+  expect(
+    resolveProguardMethod(many, {
+      className: "a",
+      name: "m",
+      descriptor: "()V",
+    }),
+  ).toMatchObject({ status: "ambiguous", candidate_count: count });
+});
+
+it.each([false, true])(
+  "preserves missing-signature merges with typed records (initial missing: %s)",
+  (initialMissing) => {
+    const metadata = (signature: string) =>
+      `    # {"id":"com.android.tools.r8.residualsignature","signature":"${signature}"}`;
+    const input = ["Owner -> a:", "    void run() -> m"];
+    if (!initialMissing) input.push(metadata("(I)V"));
+    input.push(
+      "    void run() -> m",
+      metadata("(I)V"),
+      "    void run() -> m",
+      metadata("()V"),
+      "    void run() -> m",
+      "    void run() -> m",
+      metadata("()V"),
+    );
+    const merged = parse(input.join("\n"));
+    for (const descriptor of ["(I)V", "()V"])
+      expect(
+        resolveProguardMethod(merged, {
+          className: "a",
+          name: "m",
+          descriptor,
+        }),
+      ).toMatchObject({ status: "mapped" });
+    expect(
+      resolveProguardMethod(merged, {
+        className: "a",
+        name: "m",
+        descriptor: "()J",
+      }),
+    ).toMatchObject({ status: "ambiguous", candidate_count: 2 });
+  },
+);
+
 it("compares explicit residual metadata exactly without falling back to original types", () => {
   const metadata = parse(
     [
