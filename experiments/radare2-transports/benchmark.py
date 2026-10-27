@@ -298,6 +298,10 @@ def measure(command, directory, prompt=None, timeout=600, *, node="node", memory
             f"(manifest at {manifest} cannot restore its evidence): {cleanup}", owner.child, ownership, owner) from failure
     if failure is not None:
         raise failure
+    if timed_out:
+        raise TimeoutError("Benchmark trial exceeded its time or memory limit; see " + str(directory / "resources.json"))
+    if code != 0:
+        raise RuntimeError(f"Benchmark child exited with status {code}; see {directory / 'resources.json'}")
     return result
 
 

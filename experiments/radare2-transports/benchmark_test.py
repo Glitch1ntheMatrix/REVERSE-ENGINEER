@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import psutil
 
-from benchmark import CleanupIncomplete, measure, OwnershipSession
+from benchmark import CleanupIncomplete, measure, OwnershipSession, main
 
 
 SLEEPER = "import time; time.sleep(30)"
@@ -28,6 +28,32 @@ if sys.argv[1] != 'exit': time.sleep(30)
 
 
 class BenchmarkCleanupTest(unittest.TestCase):
+    def test_nonzero_trial_exit_stops_trials_after_recording_resources(self):
+        with tempfile.TemporaryDirectory(prefix="rea-benchmark-exit-") as root:
+            directory = Path(root)
+            config = directory / "config.json"
+            config.write_text(json.dumps({"node": "node", "sdk_driver": "unused-driver", "lanes": ["fixture"],
+                "targets": [{"id": "synthetic"}], "output": str(directory / "out")}))
+            # Isolate trial failure semantics from the separately tested OS ownership boundary.
+            owner = MagicMock(ownership={"runId": "synthetic"})
+            owner.child.poll.return_value = 7
+            owner.cleanup.return_value = {"cleaned": True}
+            owner.helper.pid = 123
+            with patch("benchmark.OwnershipSession", return_value=owner) as owners, \
+                 patch.object(sys, "argv", ["benchmark.py", str(config), "sdk", "--trials", "2"]), \
+                 patch("builtins.print") as output:
+                with self.assertRaisesRegex(RuntimeError, "exited with status 7"):
+                    main()
+            owners.assert_called_once()
+            owner.cleanup.assert_called_once()
+            owner.close.assert_called_once()
+            output.assert_not_called()
+            first = directory / "out/run/sdk-synthetic-fixture-1"
+            resources = json.loads((first / "resources.json").read_text())
+            self.assertEqual(resources["exit_code"], 7)
+            self.assertTrue(resources["cleanup"]["cleaned"])
+            self.assertFalse((directory / "out/run/sdk-synthetic-fixture-2").exists())
+
     def test_signal_during_spawn_retains_helper_and_target_before_delivery(self):
         for stage in ("helper", "target"):
             with self.subTest(stage=stage), tempfile.TemporaryDirectory(prefix="rea-benchmark-spawn-") as root:
@@ -461,9 +487,16 @@ host.listProcesses = (...args) => {{
         for mode in ("timeout", "memory", "exit"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix="rea-benchmark-test-") as root:
                 directory = Path(root) / "trial"
-                result = measure([sys.executable, "-c", TREE, mode], directory,
-                                 timeout=1 if mode == "timeout" else 10,
-                                 memory_limit=64 * 1024**2 if mode == "memory" else 6 * 1024**3)
+                def run():
+                    return measure([sys.executable, "-c", TREE, mode], directory,
+                                   timeout=1 if mode == "timeout" else 10,
+                                   memory_limit=64 * 1024**2 if mode == "memory" else 6 * 1024**3)
+                if mode == "exit":
+                    result = run()
+                else:
+                    with self.assertRaises(TimeoutError):
+                        run()
+                    result = json.loads((directory / "resources.json").read_text())
                 self.assertEqual(result["interrupted_by_limit"], mode != "exit")
                 self.assertTrue(result["cleanup"]["cleaned"])
                 for pid in json.loads((directory / "stdout.log").read_text()):
@@ -575,8 +608,11 @@ host.listProcesses = (...args) => {{
 
     def test_large_prompt_does_not_block_limit_monitoring(self):
         with tempfile.TemporaryDirectory(prefix="rea-benchmark-stdin-") as root:
-            result = measure([sys.executable, "-c", SLEEPER], Path(root) / "trial",
-                             prompt="x" * 2 * 1024**2, timeout=.2)
+            directory = Path(root) / "trial"
+            with self.assertRaises(TimeoutError):
+                measure([sys.executable, "-c", SLEEPER], directory,
+                        prompt="x" * 2 * 1024**2, timeout=.2)
+            result = json.loads((directory / "resources.json").read_text())
             self.assertTrue(result["interrupted_by_limit"])
             self.assertTrue(result["cleanup"]["cleaned"])
 
