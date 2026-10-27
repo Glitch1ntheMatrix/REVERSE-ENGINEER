@@ -7,8 +7,9 @@ installed-client and agent runs.
 
 Historical verification records may refer to `experiments/analysis-efficiency`.
 Those experiment scripts are available in the [archived source tree](https://github.com/morluto/rea/tree/a2e2c29b59e8775b0e6aedb09a9eb16adf32646b/experiments/analysis-efficiency);
-they are not included in current checkouts. Test support remains under
-`tests/support/analysis-efficiency`.
+they are not included in current checkouts. The retained [test support](https://github.com/morluto/rea/blob/main/tests/support/analysis-efficiency/README.md)
+contains deterministic checkers and fixtures. The [allocation report](verification/analysis-efficiency/mcp-integer-allocation.md)
+and its original receipt JSON remain documentation, checked by the report producer.
 
 ## Developer commands
 
@@ -1169,8 +1170,8 @@ its metadata regressions against the same checksum-pinned engine and public APK.
 It runs on branch pushes affecting its bridge, fixture or engine inputs, and can
 also be dispatched manually or called by another workflow. It uses the runner's
 JDK with two active processors and a 512 MiB heap; it needs no npm dependency
-installation. This lane checks exact raw/display class selectors and the existing
-cold-metadata regressions. It does not establish CLI/MCP parity or application
+installation. This lane checks exact raw/display class selectors, raw member names and field
+DEX types used by mapping lookups, and the existing cold-metadata regressions. It does not establish CLI/MCP parity or application
 execution behavior. The broader `verify:android` lane checks CLI/MCP parity;
 neither lane runs the APK.
 
@@ -1216,7 +1217,7 @@ HarmonyOS `.har` libraries are deliberately not suffix-classified because
 Synthetic producer regressions run independently:
 
 ```sh
-npm run test:focused -- tests/boundary/process/jadxIntegration.test.ts tests/boundary/process/androidAnalysisMcp.test.ts
+npm run test:focused -- tests/boundary/process/jadxIntegration.test.ts tests/boundary/process/androidAnalysisMcp.test.ts tests/boundary/process/androidMappingMcp.test.ts
 ```
 
 ## Apktool resource decoding
@@ -1629,6 +1630,11 @@ results after a failure. Available failed-shard reports remain diagnostic only:
 failed, cancelled, skipped, or missing selected shards cannot pass the gate or
 publish successful timing history. This deliberately avoids relying on an
 import graph for generated files, filesystem inputs, subprocesses, or bridges.
+The portable report rejects an entirely skipped module inventory and lists
+fully skipped modules in its summary. A mixed passed/skipped inventory is
+allowed: Vitest's skip state does not establish whether a skipped module was
+required on that runner. Review the listed skips against platform and provider
+prerequisites; the inventory alone does not prove every required case ran.
 
 Scheduled qualification is admitted hourly at minute 23. A forced full run at
 03:23 UTC refreshes runner and dependency drift every day. Other hourly runs
