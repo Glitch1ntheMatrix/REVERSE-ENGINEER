@@ -1,3 +1,4 @@
+import { javascriptSourceRangeContains } from "./javascriptSourceCoordinates.js";
 import * as t from "@babel/types";
 
 import type {
@@ -16,7 +17,6 @@ import {
 } from "./javascriptAstValues.js";
 import {
   resolveSemanticBindingState,
-  semanticStableInitializer,
   type JavaScriptSemanticAnalysisState,
   type JavaScriptSemanticBindingState,
   type JavaScriptSemanticInitializer,
@@ -132,9 +132,7 @@ const resolveIdentifier = (
   );
   // Knowing every local candidate does not prove that any write replaced the
   // incoming value, or that a write in another activation precedes this read.
-  const covered =
-    read.hasDefiniteInitializer ||
-    semanticStableInitializer(binding, context.state) !== undefined;
+  const covered = read.hasDefiniteInitializer;
   const resolution =
     candidates.complete && !covered
       ? {
@@ -273,7 +271,7 @@ const parameterAcceptsArgument = (
   if (!t.isFunction(node)) return false;
   const parameters = runtimeFunctionParameters(node);
   const parameterIndex = parameters.findIndex((parameter) =>
-    rangeContains(range(parameter), location),
+    javascriptSourceRangeContains(range(parameter), location),
   );
   if (parameterIndex === argumentIndex) return true;
   return (
@@ -282,17 +280,6 @@ const parameterAcceptsArgument = (
     t.isRestElement(parameters[parameterIndex])
   );
 };
-
-const rangeContains = (
-  outer: JavaScriptSemanticArgumentFlow["parameterLocation"],
-  inner: JavaScriptSemanticArgumentFlow["parameterLocation"],
-): boolean =>
-  (outer.start.line < inner.start.line ||
-    (outer.start.line === inner.start.line &&
-      outer.start.column <= inner.start.column)) &&
-  (outer.end.line > inner.end.line ||
-    (outer.end.line === inner.end.line &&
-      outer.end.column >= inner.end.column));
 
 const uniqueCallableIds = (values: readonly string[]): string[] =>
   [...new Set(values)].sort(compareUnicodeCodePoints);

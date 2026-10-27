@@ -1,6 +1,13 @@
 import type { z } from "zod";
 import type { AndroidRequest } from "../domain/android/androidAnalysis.js";
 import { androidResultSchemas } from "../domain/android/androidAnalysis.js";
+import { observedAndroidManifestComponentsSchema } from "../domain/android/androidManifestComponents.js";
+import {
+  type AndroidMappingQuery,
+  type AndroidMappingSource,
+  projectAndroidMapping,
+} from "../domain/android/androidMapping.js";
+import { parseAndroidManifestComponents } from "./AndroidManifestComponents.js";
 import {
   AnalysisInputError,
   AnalysisOutputError,
@@ -8,7 +15,7 @@ import {
 import type { JsonValue } from "../domain/jsonValue.js";
 import {
   jadxAppSchema,
-  jadxClassPageSchema,
+  type JadxClassPage,
   jadxClassSchema,
   jadxLoadSchema,
   jadxMethodSchema,
@@ -18,6 +25,11 @@ import {
 
 /** The adapter consumes tool payloads, never provider RPC details outside this layer. */
 export interface JadxToolPort {
+  listClasses(input: {
+    readonly query: string;
+    readonly offset: number;
+    readonly limit: number;
+  }): Promise<JadxClassPage>;
   json(
     name: string,
     input: Readonly<Record<string, JsonValue>>,
@@ -32,6 +44,17 @@ type Engine = z.infer<
   typeof androidResultSchemas.inspect_android_package
 >["engine"];
 type ClassSummary = z.infer<typeof jadxClassSchema>;
+/** Session facts shared by every request, and the caller's optional mapping. */
+export interface JadxAnalysisContext {
+  readonly loaded: z.infer<typeof jadxLoadSchema>;
+  readonly engine: Engine;
+  readonly mapping?: AndroidMappingSource | undefined;
+}
+
+const observedPackageSchema =
+  androidResultSchemas.inspect_android_package.extend({
+    components: observedAndroidManifestComponentsSchema,
+  });
 
 const methodsOf = (summary: ClassSummary) => {
   const seen = new Map<string, number>();
@@ -47,6 +70,50 @@ const methodsOf = (summary: ClassSummary) => {
     };
   });
 };
+
+/** Mapping lookups use the bridge's raw DEX identities, never display aliases. */
+const classQuery = (summary: ClassSummary): AndroidMappingQuery => ({
+  kind: "class",
+  name: summary.full_name,
+  raw_name: summary.raw_name,
+});
+
+const innerClassQueries = (summary: ClassSummary): AndroidMappingQuery[] =>
+  summary.inner_classes.map((name, index) => ({
+    kind: "class",
+    name,
+    raw_name: summary.inner_class_raw_names[index] ?? "",
+  }));
+
+const methodQueries = (summary: ClassSummary) =>
+  methodsOf(summary).map(
+    (method, index): Extract<AndroidMappingQuery, { kind: "method" }> => ({
+      kind: "method",
+      class_raw_name: summary.raw_name,
+      name: method.name,
+      overload_index: method.overload_index,
+      raw_name: summary.methods[index]?.raw_name ?? "",
+      dex_descriptor: method.dex_descriptor,
+    }),
+  );
+
+const fieldQueries = (summary: ClassSummary): AndroidMappingQuery[] =>
+  summary.fields.map((field) => ({
+    kind: "field",
+    class_raw_name: summary.raw_name,
+    name: field.name,
+    raw_name: field.raw_name,
+    dex_type: field.dex_type,
+  }));
+
+/** The optional mapping block; absent unless the caller selected a mapping. */
+const mappingOf = (
+  mapping: AndroidMappingSource | undefined,
+  queries: () => AndroidMappingQuery[],
+) =>
+  mapping === undefined
+    ? {}
+    : { mapping: projectAndroidMapping(mapping, queries()) };
 
 const inputFailure = (
   request: AndroidRequest,
@@ -65,8 +132,13 @@ const classSummary = async (
     { operation: "inspect_android_package" | "search_android_classes" }
   >,
 ): Promise<ClassSummary> => {
+  // Only class inspection reports DEX static values; method and reference
+  // lookups keep the member-only summary so large constants cannot block them.
   const raw = await tools.json("get_class_summary", {
     class_name: request.input.class_name,
+    ...(request.operation === "inspect_android_class"
+      ? { dex_static_values: true }
+      : {}),
   });
   if (
     raw !== null &&
@@ -86,7 +158,10 @@ const classSummary = async (
       { cause: summary.error },
     );
   const value = summary.data;
-  if (value.full_name !== request.input.class_name)
+  if (
+    value.full_name !== request.input.class_name &&
+    value.raw_name !== request.input.class_name
+  )
     inputFailure(
       request,
       "class_name",
@@ -95,7 +170,8 @@ const classSummary = async (
   if (
     value.method_count !== value.methods.length ||
     value.field_count !== value.fields.length ||
-    value.inner_class_count !== value.inner_classes.length
+    value.inner_class_count !== value.inner_classes.length ||
+    value.inner_class_raw_names.length !== value.inner_classes.length
   )
     throw new AnalysisOutputError(
       request.operation,
@@ -113,7 +189,7 @@ const inspectPackage = async (
   const manifest = normalizeJadxText(
     await tools.text("get_android_manifest", {}),
   );
-  return androidResultSchemas.inspect_android_package.parse({
+  return observedPackageSchema.parse({
     engine,
     package_name: app.package || null,
     version_name: app.version_name || null,
@@ -122,6 +198,12 @@ const inspectPackage = async (
     target_sdk: app.target_sdk || null,
     permissions: app.permissions,
     manifest,
+    components: parseAndroidManifestComponents(
+      manifest.text,
+      manifest.status,
+      app.target_sdk || null,
+      app.min_sdk || null,
+    ),
     class_count: loaded.class_count,
     resource_count: loaded.resource_count,
     signature_verification: "not_performed",
@@ -138,13 +220,11 @@ const searchClasses = async (
   const pageSize = 4096;
   let offset = 0;
   do {
-    const page = jadxClassPageSchema.parse(
-      await tools.json("list_classes", {
-        query: request.input.query,
-        offset,
-        limit: pageSize,
-      }),
-    );
+    const page = await tools.listClasses({
+      query: request.input.query,
+      offset,
+      limit: pageSize,
+    });
     if (
       page.total_classes !== loaded.class_count ||
       page.offset !== offset ||
@@ -211,7 +291,7 @@ const inspectMethod = async (
   tools: JadxToolPort,
   request: Extract<AndroidRequest, { operation: "inspect_android_method" }>,
   summary: ClassSummary,
-  engine: Engine,
+  { engine, mapping }: JadxAnalysisContext,
 ): Promise<JsonValue> => {
   const candidates = matchingMethods(summary, request);
   if (candidates.length > 1 && request.input.overload_index === undefined)
@@ -230,7 +310,7 @@ const inspectMethod = async (
     );
   const body = jadxMethodSchema.parse(
     await tools.json("get_method_body", {
-      class_name: summary.full_name,
+      class_name: request.input.class_name,
       method_name: request.input.method_name,
       overload_index: index,
       smali_fallback: true,
@@ -257,6 +337,14 @@ const inspectMethod = async (
     fell_back: body.fell_back,
     markers: body.markers,
     source: normalizeJadxText(body.body),
+    ...mappingOf(mapping, () => [
+      classQuery(summary),
+      ...methodQueries(summary).filter(
+        (method) =>
+          method.name === selected.name &&
+          method.overload_index === selected.overload_index,
+      ),
+    ]),
   });
 };
 
@@ -264,9 +352,9 @@ const inspectMethod = async (
 export const analyzeJadxRequest = async (
   tools: JadxToolPort,
   request: AndroidRequest,
-  loaded: z.infer<typeof jadxLoadSchema>,
-  engine: Engine,
+  context: JadxAnalysisContext,
 ): Promise<JsonValue> => {
+  const { loaded, engine } = context;
   if (request.operation === "inspect_android_package")
     return inspectPackage(tools, loaded, engine);
   if (request.operation === "search_android_classes")
@@ -280,11 +368,18 @@ export const analyzeJadxRequest = async (
       fields: summary.fields.map((field) => ({
         name: field.name,
         reported_type: field.type,
+        dex_static_value: field.dex_static_value ?? null,
       })),
       inner_classes: summary.inner_classes,
+      ...mappingOf(context.mapping, () => [
+        classQuery(summary),
+        ...innerClassQueries(summary),
+        ...methodQueries(summary),
+        ...fieldQueries(summary),
+      ]),
     });
   if (request.operation === "inspect_android_method")
-    return inspectMethod(tools, request, summary, engine);
+    return inspectMethod(tools, request, summary, context);
   return traceReferences(tools, request, summary, engine);
 };
 
@@ -324,7 +419,7 @@ const traceReferences = async (
     await tools.json(
       methodName === undefined ? "get_xrefs_to_class" : "get_xrefs_to_method",
       {
-        class_name: summary.full_name,
+        class_name: request.input.class_name,
         ...(methodName === undefined
           ? {}
           : { method_name: methodName, overload_index: index }),

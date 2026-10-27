@@ -25,10 +25,24 @@ const emptyRows = {
   string_literals: { value: "", value_base64: null },
 };
 
+/**
+ * Smallest serialized generic method instance row; checked against the
+ * remaining budget for the whole genericMethodTable before any row resolves.
+ */
+export const IL2CPP_GENERIC_INSTANCE_MINIMUM_BYTES = JSON.stringify({
+  state: "unknown",
+  address: null,
+  rva: null,
+  method_spec: 0,
+  method: 0,
+  name: null,
+}).length;
+
 /** Per-snapshot admission, before text expansion and each retained fact. */
 export const createIl2cppMetadataAdmission = (
   limit: number,
   exceed: () => never,
+  linked = false,
 ): Required<Il2cppMetadataReadOptions> => {
   let used = 0;
   // Keys/decoded names/literal spans are immutable within this one decoder run.
@@ -45,6 +59,14 @@ export const createIl2cppMetadataAdmission = (
       let minimum = 0;
       for (const key of Object.keys(emptyRows) as (keyof typeof emptyRows)[])
         minimum += counts[key] * JSON.stringify(emptyRows[key]).length;
+      if (linked)
+        minimum +=
+          counts.methods *
+            (JSON.stringify({ state: "code", address: null, rva: null })
+              .length +
+              JSON.stringify({ type: 0, name: "" }).length) +
+          (counts.fields + counts.parameters) *
+            JSON.stringify({ type: 0, name: "" }).length;
       if (minimum > limit) exceed();
     },
     beforeText(bytes) {

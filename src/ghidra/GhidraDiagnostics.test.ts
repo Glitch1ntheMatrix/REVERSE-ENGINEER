@@ -1,63 +1,66 @@
-import { createHash } from "node:crypto";
 import { ProcessOutputTokenScanner } from "../process/ProcessOutputTokenScanner.js";
 import {
   ghidraFailureOutput,
-  operationScopedGhidraDiagnostics,
+  createGhidraDiagnostics,
 } from "./GhidraDiagnostics.js";
 import { expect, it } from "vitest";
-import { createGhidraDiagnostics } from "./GhidraDiagnostics.js";
 
-it("omits complete operation output while retaining transcript digests", () => {
-  const stdoutText = "session stdout\n";
-  const stderrText = "session stderr\n";
-  const diagnostics = {
-    stdout: { text: stdoutText, bytes: 17, retained_bytes: 17 },
-    stderr: { text: stderrText, bytes: 17, retained_bytes: 17 },
-    failure_output: {
-      stdout: { text: "" },
-      stderr: { text: "" },
-      complete: true,
-    },
-    ghidra_log_path: "/runtime/ghidra.log",
+it("keeps request output and provenance without projecting launcher history", () => {
+  const output = { text: "launcher output", bytes: 15, observedBytes: 15 };
+  const options = {
+    targetPath: "./caller-selected/../target",
+    targetSha256: "a".repeat(64),
+    transport: "unix-socket" as const,
+    providerVersion: "12.1.4",
+    profileDigest: "b".repeat(64),
+    runtimeRoot: "/owned/runtime",
+    snapshot: { stdout: output, stderr: output, exitCode: null, signal: null },
+    previous: {},
+    failure_output: { stdout: { text: "query output" }, complete: false },
   };
-
-  const scoped = operationScopedGhidraDiagnostics(diagnostics);
-
-  expect(scoped).toMatchObject({
-    stdout: {
-      bytes: 17,
-      retained_bytes: 17,
-      retained_sha256: createHash("sha256").update(stdoutText).digest("hex"),
-      text_omitted: "session_transcript",
-    },
-    stderr: {
-      retained_sha256: createHash("sha256").update(stderrText).digest("hex"),
-      text_omitted: "session_transcript",
-    },
-    failure_output: diagnostics.failure_output,
-    ghidra_log_path: diagnostics.ghidra_log_path,
+  const request = createGhidraDiagnostics({ ...options, scope: "request" });
+  expect(request).toMatchObject({
+    diagnostic_scope: "request",
+    target_path: options.targetPath,
+    target_sha256: options.targetSha256,
+    profile_digest: options.profileDigest,
+    runtime_root: options.runtimeRoot,
+    failure_output: options.failure_output,
   });
-  expect(scoped.stdout).not.toHaveProperty("text");
-  expect(scoped.stderr).not.toHaveProperty("text");
+  expect(request).not.toHaveProperty("stdout");
+  expect(request).not.toHaveProperty("stderr");
+  expect(createGhidraDiagnostics(options)).toMatchObject({
+    stdout: { text: output.text },
+    stderr: { text: output.text },
+    failure_output: options.failure_output,
+  });
 });
 
-it("keeps full diagnostics when operation output is incomplete", () => {
-  const diagnostics = {
-    stdout: { text: "session transcript" },
-    stderr: { text: "" },
-    failure_output: { stdout: { text: "partial" }, complete: false },
+it("keeps cached session output owned while projecting historical request coordinates", () => {
+  const previous = {
+    target_path: "/selected/target",
+    ghidra_log_path: "/owned/project/ghidra.log",
+    stdout: { text: "old launcher output" },
+    stderr: { text: "old launcher stderr" },
+    launch_support: [{ stdout: "JDK version" }],
+    failure_output: { stdout: { text: "old request" }, complete: true },
   };
-
-  expect(operationScopedGhidraDiagnostics(diagnostics)).toBe(diagnostics);
-});
-
-it("keeps full diagnostics when operation output scope is missing", () => {
-  const diagnostics = {
-    stdout: { text: "session transcript" },
-    stderr: { text: "" },
-  };
-
-  expect(operationScopedGhidraDiagnostics(diagnostics)).toBe(diagnostics);
+  const request = createGhidraDiagnostics({
+    scope: "request",
+    targetPath: "/selected/target",
+    targetSha256: "a".repeat(64),
+    transport: "unix-socket",
+    providerVersion: "12.1.4",
+    profileDigest: "b".repeat(64),
+    previous,
+  });
+  expect(request).toEqual({
+    diagnostic_scope: "request",
+    target_path: previous.target_path,
+    ghidra_log_path: previous.ghidra_log_path,
+  });
+  expect(previous.stdout.text).toBe("old launcher output");
+  expect(previous.failure_output.stdout.text).toBe("old request");
 });
 
 it("does not reuse historical operation-scoped failure output without a current owner", () => {
@@ -79,6 +82,7 @@ it("does not reuse historical operation-scoped failure output without a current 
 
   expect(diagnostics.stdout).toEqual({ text: "historical OOME" });
   expect(diagnostics).not.toHaveProperty("failure_output");
+  expect(diagnostics).not.toHaveProperty("stop_requested");
 });
 
 it.each([false, true])(
@@ -124,5 +128,32 @@ it.each([false, true])(
         },
       ],
     });
+  },
+);
+
+it.each([
+  [undefined, false],
+  [true, true],
+] as const)(
+  "carries the supervisor's stop request into exit diagnostics (%s)",
+  (stopRequested, expected) => {
+    const stream = { text: "", bytes: 0, observedBytes: 0 };
+    const diagnostics = createGhidraDiagnostics({
+      targetPath: "/tmp/target",
+      targetSha256: "a".repeat(64),
+      transport: "unix-socket",
+      providerVersion: "12.1.4",
+      profileDigest: "b".repeat(64),
+      previous: {},
+      snapshot: {
+        stdout: stream,
+        stderr: stream,
+        exitCode: null,
+        signal: "SIGKILL",
+        ...(stopRequested === undefined ? {} : { stopRequested }),
+      },
+    });
+    expect(diagnostics.exit_signal).toBe("SIGKILL");
+    expect(diagnostics.stop_requested).toBe(expected);
   },
 );

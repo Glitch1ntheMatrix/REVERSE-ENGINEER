@@ -1,15 +1,16 @@
 import {
   checkRange,
+  readIndex,
   Il2cppMetadataFormatFailure,
 } from "./Il2cppMetadataFormat.js";
 import {
-  IL2CPP_METADATA_MAGIC,
   IL2CPP_METADATA_VERSIONS,
   il2cppMetadataSectionNames,
   type Il2cppMetadata,
   type Il2cppMetadataSection,
   type IL2cppMetadataSectionName,
 } from "../domain/il2cpp/il2cppMetadata.js";
+import { observeIl2cppMetadataHeaderPrefix } from "../domain/il2cpp/il2cppMetadataHeaderPrefix.js";
 import {
   readIl2cppMembers,
   readIl2cppMemberTables,
@@ -24,7 +25,14 @@ export type Il2cppMetadataVersion = (typeof IL2CPP_METADATA_VERSIONS)[number];
 type RecordSection = "typeDefinitions" | "images" | "methods";
 export type Il2cppMetadataDecoded = Omit<
   Il2cppMetadata,
-  "artifact" | "limitations"
+  | "artifact"
+  | "limitations"
+  | "binary"
+  | "method_addresses"
+  | "return_types"
+  | "field_types"
+  | "parameter_types"
+  | "generic_method_instances"
 >;
 
 /**
@@ -121,27 +129,19 @@ export const il2cppMetadataRecordBytes = (
 const isIndexWidth = (value: number): value is IndexWidth =>
   value === 1 || value === 2 || value === 4;
 
-/** Read a serialized index; the all-ones value of narrow widths means -1. */
-export const readIndex = (bytes: Buffer, offset: number, width: IndexWidth) => {
-  if (width === 1) {
-    const value = bytes.readUInt8(offset);
-    return value === 0xff ? -1 : value;
-  }
-  if (width === 2) {
-    const value = bytes.readUInt16LE(offset);
-    return value === 0xffff ? -1 : value;
-  }
-  return bytes.readInt32LE(offset);
-};
-
 const readHeader = (bytes: Buffer) => {
-  const magic = bytes.length < 4 ? null : bytes.readUInt32LE(0);
-  if (bytes.length < 8 || magic !== IL2CPP_METADATA_MAGIC)
+  const prefix = observeIl2cppMetadataHeaderPrefix(bytes);
+  if (prefix.kind !== "il2cpp")
     throw new Il2cppMetadataFormatFailure(
       "unrecognized-magic",
       "the file does not start with the IL2CPP global-metadata magic 0xFAB11BAF; encrypted or non-metadata inputs are not decoded",
     );
-  const version = bytes.readInt32LE(4);
+  if (prefix.version === null)
+    throw new Il2cppMetadataFormatFailure(
+      "truncated-header",
+      `the file has ${bytes.length} bytes, fewer than the 8-byte magic/version prefix; the metadata version is unknown`,
+    );
+  const { magic, version } = prefix;
   if (!isSupportedVersion(version))
     throw new Il2cppMetadataFormatFailure(
       "unsupported-version",
@@ -254,15 +254,25 @@ const FIXED_WIDTHS: Il2cppMetadataDecoded["index_widths"] = {
   type_width_source: "fixed-width-version",
 };
 
+const GENERIC_CONTAINER_RECORD_BYTES = 16;
+
 const resolveWidths = (
   section: (name: SectionName) => Il2cppMetadataSection,
 ): Il2cppMetadataDecoded["index_widths"] => {
+  const genericContainers = section("genericContainers");
+  const genericContainerBytes = recordBytes(genericContainers);
+  if (
+    genericContainerBytes !== null &&
+    genericContainerBytes !== GENERIC_CONTAINER_RECORD_BYTES
+  )
+    throw new Il2cppMetadataFormatFailure(
+      "record-size-mismatch",
+      `section genericContainers records are ${genericContainerBytes} bytes, but each record is ${GENERIC_CONTAINER_RECORD_BYTES}`,
+    );
   const type_definition = il2cppIndexWidth(
     headerCount(section("typeDefinitions")),
   );
-  const generic_container = il2cppIndexWidth(
-    headerCount(section("genericContainers")),
-  );
+  const generic_container = il2cppIndexWidth(headerCount(genericContainers));
   const parameter = il2cppIndexWidth(headerCount(section("parameters")));
   // TypeIndex counts native types, so its width is recovered from records.
   const interfaceOffset = recordBytes(section("interfaceOffsets"));
@@ -332,10 +342,9 @@ const recordCounts = (
 };
 
 /**
- * Decode NUL-terminated UTF-8 names once each from the strings section. An
- * index must start a string, so a shifted section or a pointer into another
- * name fails instead of returning a different name, and total decoding stays
- * bounded by the section size.
+ * Decode NUL-terminated UTF-8 names once each from the strings section. Indices
+ * are byte offsets and may refer to a suffix of another stored name. Bounds,
+ * termination, UTF-8 validity, and the total decoding budget remain enforced.
  */
 const createStringReader = (
   bytes: Buffer,
@@ -354,11 +363,6 @@ const createStringReader = (
       throw new Il2cppMetadataFormatFailure(
         "invalid-string",
         `${label} string index ${index} has no terminated entry inside the ${strings.size}-byte string section`,
-      );
-    if (index > 0 && pool[index - 1] !== 0)
-      throw new Il2cppMetadataFormatFailure(
-        "invalid-string",
-        `${label} string index ${index} starts inside another string`,
       );
     beforeText?.(end - index);
     let value: string;
@@ -390,6 +394,7 @@ export interface MetadataTables {
   readonly members: ReturnType<typeof readIl2cppMemberTables>;
   readonly beforeText: Il2cppMetadataReadOptions["beforeText"];
   readonly onRow: Il2cppMetadataReadOptions["onRow"];
+  readonly linkFacts?: Il2cppMetadataLinkFacts;
 }
 
 function* readImages({
@@ -516,6 +521,10 @@ function* readTypes(tables: MetadataTables): Generator<
     properties: [] as MetadataOwnerRange[],
     events: [] as MetadataOwnerRange[],
   };
+  const genericContainerCount =
+    tables.linkFacts === undefined
+      ? 0
+      : entriesIn(section("genericContainers"), GENERIC_CONTAINER_RECORD_BYTES);
   for (let index = 0; index < counts.typeDefinitions; index++) {
     if (index % 256 === 0) yield;
     const at = typeDefinitions.offset + index * sizes.typeDefinitions;
@@ -526,6 +535,29 @@ function* readTypes(tables: MetadataTables): Generator<
       12 +
       typeDefinitionTypeIndices * widths.type +
       widths.generic_container;
+    if (tables.linkFacts !== undefined) {
+      const genericContainerIndex = readTypeGenericContainer(tables, index);
+      if (
+        genericContainerIndex < -1 ||
+        genericContainerIndex >= genericContainerCount
+      )
+        throw new Il2cppMetadataFormatFailure(
+          "index-out-of-range",
+          `type ${index} generic container ${genericContainerIndex} is outside the ${genericContainerCount} available rows`,
+        );
+      if (genericContainerIndex !== -1) {
+        const argumentCount = readGenericContainer(
+          tables,
+          genericContainerIndex,
+        ).count;
+        if (argumentCount < 0)
+          throw new Il2cppMetadataFormatFailure(
+            "index-out-of-range",
+            `type ${index} generic container ${genericContainerIndex} has negative argument count ${argumentCount}`,
+          );
+        tables.linkFacts.genericTypeArgumentCounts[index] = argumentCount;
+      }
+    }
     const countsAt = starts + 32;
     const type = {
       name: readString(bytes.readInt32LE(at), `type ${index} name`),
@@ -572,6 +604,7 @@ function* readMethods({
   counts,
   readString,
   methodReturnParameterToken,
+  linkFacts,
   onRow,
 }: MetadataTables): Generator<
   void,
@@ -596,6 +629,15 @@ function* readMethods({
         "index-out-of-range",
         `method ${index} declares type ${method.declaring_type} outside the ${typeTotal} type definitions`,
       );
+    if (linkFacts !== undefined) {
+      const returnAt = at + 4 + widths.type_definition;
+      linkFacts.returnTypes[index] = readIndex(bytes, returnAt, widths.type);
+      linkFacts.methodTokens[index] = bytes.readUInt32LE(
+        at +
+          methodContainerAt({ widths, methodReturnParameterToken }) +
+          widths.generic_container,
+      );
+    }
     parameterRanges.push({
       start: readIndex(
         bytes,
@@ -700,11 +742,162 @@ export interface Il2cppMetadataReadOptions {
   ) => void;
 }
 
+/** Per-row typed fields the public inventory omits but native linking needs. */
+export interface Il2cppMetadataLinkFacts {
+  /** Method definition token per method index. */
+  readonly methodTokens: Uint32Array;
+  /** Il2CppType table index of each method's return type. */
+  readonly returnTypes: Int32Array;
+  readonly fieldTypes: Int32Array;
+  readonly parameterTypes: Int32Array;
+  /** Total class generic argument count per TypeDefinition, including enclosing types. */
+  readonly genericTypeArgumentCounts: Int32Array;
+  /** Demand-read names from this stable metadata snapshot, by GenericParameterIndex. */
+  readonly genericParameterName: (index: number) => string | undefined;
+  /**
+   * Demand-read GenericContainerIndex of a type definition: -1 for a
+   * non-generic type, undefined when the index or layout is not decoded.
+   */
+  readonly typeGenericContainer: (index: number) => number | undefined;
+  /**
+   * Demand-read GenericContainerIndex of a method definition: -1 for a
+   * non-generic method, undefined when the index is out of range.
+   */
+  readonly methodGenericContainer: (index: number) => number | undefined;
+  /**
+   * Demand-read argument count and first GenericParameterIndex of a generic
+   * container; undefined out of range and for the counted (version 39)
+   * layout, whose container records are not decoded.
+   */
+  readonly genericContainer: (
+    index: number,
+  ) => { readonly count: number; readonly parameterStart: number } | undefined;
+}
+
+/** Byte offset of GenericContainerIndex in a method record; the token follows. */
+const methodContainerAt = ({
+  widths,
+  methodReturnParameterToken,
+}: Pick<MetadataTables, "widths" | "methodReturnParameterToken">) =>
+  4 +
+  widths.type_definition +
+  widths.type +
+  (methodReturnParameterToken ? 4 : 0) +
+  widths.parameter;
+
+/** Raw row interpretation; callers own index and layout admission. */
+const readTypeGenericContainer = (tables: MetadataTables, index: number) =>
+  readIndex(
+    tables.bytes,
+    tables.section("typeDefinitions").offset +
+      index * tables.recordBytes.typeDefinitions +
+      8 +
+      tables.typeDefinitionTypeIndices * tables.widths.type,
+    tables.widths.generic_container,
+  );
+
+/** ownerIndex, type_argc, is_method and genericParameterStart are int32. */
+const readGenericContainer = (tables: MetadataTables, index: number) => {
+  const at =
+    tables.section("genericContainers").offset +
+    index * GENERIC_CONTAINER_RECORD_BYTES;
+  return {
+    count: tables.bytes.readInt32LE(at + 4),
+    parameterStart: tables.bytes.readInt32LE(at + 12),
+  };
+};
+
+/** Type and method container indices and container records, read on demand. */
+const createGenericContainerReaders = (tables: MetadataTables) => {
+  const typeCount = tables.counts.typeDefinitions;
+  const containers = tables.section("genericContainers");
+  const containerCount =
+    tables.indexing === "counted"
+      ? 0
+      : Math.floor(containers.size / GENERIC_CONTAINER_RECORD_BYTES);
+  const inRange = (index: number, count: number) =>
+    Number.isInteger(index) && index >= 0 && index < count;
+  const methods = tables.section("methods"),
+    methodCount = tables.counts.methods,
+    methodBytes = tables.recordBytes.methods,
+    methodAt = methodContainerAt(tables);
+  return {
+    methodGenericContainer: (index: number): number | undefined =>
+      !inRange(index, methodCount)
+        ? undefined
+        : readIndex(
+            tables.bytes,
+            methods.offset + index * methodBytes + methodAt,
+            tables.widths.generic_container,
+          ),
+    typeGenericContainer: (index: number): number | undefined =>
+      tables.indexing === "counted" || !inRange(index, typeCount)
+        ? undefined
+        : readTypeGenericContainer(tables, index),
+    genericContainer: (index: number) =>
+      !inRange(index, containerCount)
+        ? undefined
+        : readGenericContainer(tables, index),
+  };
+};
+
+/** Own the row layout once; unused generic names allocate no arrays or strings. */
+const createGenericParameterReader = (tables: MetadataTables) => {
+  const parameters = tables.section("genericParameters"),
+    width = tables.widths.generic_container + 12;
+  const count = entriesIn(parameters, width);
+  if (parameters.count !== null && count !== parameters.count)
+    throw new Il2cppMetadataFormatFailure(
+      "record-size-mismatch",
+      "generic parameter count disagrees with its extent",
+    );
+  return (index: number): string | undefined => {
+    if (!Number.isInteger(index) || index < 0 || index >= count)
+      return undefined;
+    return tables.readString(
+      tables.bytes.readInt32LE(
+        parameters.offset + index * width + tables.widths.generic_container,
+      ),
+      `generic parameter ${index} name`,
+    );
+  };
+};
+
+/** Decoded metadata plus the typed row facts that link it to a native binary. */
+export interface Il2cppMetadataForLinking {
+  readonly metadata: Il2cppMetadataDecoded;
+  readonly link: Il2cppMetadataLinkFacts;
+}
+
 /** Decode image, type, method and member names and string literals without native binaries or decryption. */
 export function* readIl2cppMetadataSteps(
   bytes: Buffer,
   options: Il2cppMetadataReadOptions = {},
 ): Generator<void, Il2cppMetadataDecoded> {
+  return (yield* readMetadataCoreSteps(bytes, options, false)).metadata;
+}
+
+/** Decode metadata and retain the typed row facts used for native linking. */
+export function* readIl2cppMetadataForLinkingSteps(
+  bytes: Buffer,
+  options: Il2cppMetadataReadOptions = {},
+): Generator<void, Il2cppMetadataForLinking> {
+  const parsed = yield* readMetadataCoreSteps(bytes, options, true);
+  if (parsed.link === undefined)
+    throw new Error(
+      "Native metadata reader did not retain requested linking facts",
+    );
+  return { metadata: parsed.metadata, link: parsed.link };
+}
+
+function* readMetadataCoreSteps(
+  bytes: Buffer,
+  options: Il2cppMetadataReadOptions,
+  linking: boolean,
+): Generator<
+  void,
+  { metadata: Il2cppMetadataDecoded; link: Il2cppMetadataLinkFacts | undefined }
+> {
   const { magic, version, headerBytes, sections } = readHeader(bytes);
   checkSections(bytes, headerBytes, sections);
   const byName = new Map(sections.map((entry) => [entry.name, entry]));
@@ -713,7 +906,7 @@ export function* readIl2cppMetadataSteps(
   const widths =
     layout.indexing === "counted" ? resolveWidths(section) : FIXED_WIDTHS;
   const expected = il2cppMetadataRecordBytes(widths, version);
-  const tables: MetadataTables = {
+  let tables: MetadataTables = {
     bytes,
     section,
     widths,
@@ -741,6 +934,21 @@ export function* readIl2cppMetadataSteps(
     methods: tables.counts.methods,
     ...tables.members.counts,
   });
+  if (linking)
+    tables = {
+      ...tables,
+      linkFacts: {
+        methodTokens: new Uint32Array(tables.counts.methods),
+        returnTypes: new Int32Array(tables.counts.methods),
+        fieldTypes: new Int32Array(tables.members.counts.fields),
+        parameterTypes: new Int32Array(tables.members.counts.parameters),
+        genericTypeArgumentCounts: new Int32Array(
+          tables.counts.typeDefinitions,
+        ),
+        genericParameterName: createGenericParameterReader(tables),
+        ...createGenericContainerReaders(tables),
+      },
+    };
   yield;
   const images = yield* readImages(tables);
   yield* checkImageRanges(images);
@@ -752,25 +960,16 @@ export function* readIl2cppMetadataSteps(
     parameters: parameterRanges,
   });
   return {
-    magic,
-    metadata_version: version,
-    index_widths: widths,
-    sections,
-    images,
-    types,
-    methods,
-    ...members,
+    metadata: {
+      magic,
+      metadata_version: version,
+      index_widths: widths,
+      sections,
+      images,
+      types,
+      methods,
+      ...members,
+    },
+    link: tables.linkFacts,
   };
 }
-
-/** Synchronous consumption of the same decoder for byte-level callers. */
-export const readIl2cppMetadata = (
-  bytes: Buffer,
-  options: Il2cppMetadataReadOptions = {},
-): Il2cppMetadataDecoded => {
-  const steps = readIl2cppMetadataSteps(bytes, options);
-  for (;;) {
-    const step = steps.next();
-    if (step.done) return step.value;
-  }
-};
