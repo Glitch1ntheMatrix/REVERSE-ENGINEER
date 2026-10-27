@@ -2,7 +2,7 @@
 
 Status: draft proposal and isolated experiment. Radare2 is not registered in
 REA's runtime, setup, doctor or tool catalog by this change. Integration requires
-the maintainer scope decision described in [Contributing](../CONTRIBUTING.md#fail-closed-integration).
+the maintainer scope decision described in [Contributing](https://github.com/morluto/rea/blob/main/CONTRIBUTING.md#fail-closed-integration).
 Related work: [feature request #2711](https://github.com/morluto/rea/issues/2711)
 and [provider PR #3521](https://github.com/morluto/rea/pull/3521). Coordinate the
 owned command/session work with that PR instead of shipping two implementations.
@@ -107,7 +107,7 @@ Preserve analysis policy as well as tool arguments. The inspected
 it is not an observation-only operation in that state. Decompiler choice and
 mutation readback also need explicit semantics. The transport probe only uses
 `open_file` and `run_command`. The separate
-[task benchmark](../experiments/radare2-transports/BENCHMARK.md) exercises direct
+[task benchmark](https://github.com/morluto/rea/blob/main/experiments/radare2-transports/BENCHMARK.md) exercises direct
 upstream named tools. Mapping them into REA, `-u`, core-plugin MCP and their
 REA CLI/MCP parity remain unimplemented and unverified here.
 
@@ -178,23 +178,23 @@ not constrain what caller-selected commands or plugins can do.
 ## Proposed defaults informed by the task runs
 
 These are recommendations for the pending integration, not new runtime defaults.
-The [measured tasks](../experiments/radare2-transports/BENCHMARK.md) support
+The [measured tasks](https://github.com/morluto/rea/blob/main/experiments/radare2-transports/BENCHMARK.md) support
 reducing unnecessary analysis and agent calls. They do not establish a universal
 engine or transport ranking. Explicit provider, transport, commands, decompiler
 and analysis choices always take precedence.
 
-| Decision                     | Proposed policy                                                                                                                                                                     | Evidence and limits                                                                                                                                                                                                                                  |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Selected r2 decompiler       | Recommend installed r2ghidra / `pdg`; use assembly directly when it answers the question. Keep pdc/decai explicit.                                                                  | All r2 task lanes used r2ghidra successfully; pdc/decai were not comparatively benchmarked. The raw SQLite agents needed no decompilation.                                                                                                           |
-| Initial analysis             | Opening an owned core does not imply `aa` or `aaa`. Read known instructions/bytes first; request function-scoped analysis when needed, and basic `aa` for discovery when justified. | The raw SQLite agents answered from short instruction/literal reads; the typed agent chose `aa` and analysed 2,765 functions. `analyze(level:0)` means `aa`, not no analysis. Empty basic-analysis xrefs do not prove references absent.             |
-| Existing connection          | Reuse the caller-selected session and its validated analysis; preserve external ownership and disclose unresolved target identity/freshness.                                        | Reuse avoids discarding useful work. HTTP/iaito performance and live freshness were not benchmarked; do not discover or attach to endpoints automatically.                                                                                           |
-| New bounded command question | Prefer a one-shot batch of the required reads when no selected session exists.                                                                                                      | One-shot used fewer total tokens than the retained REA lane in all three agent tasks and finished those tasks sooner in this cohort. This is workflow guidance, not an automatic rewrite of caller commands.                                         |
-| New continuing investigation | Prefer an owned retained r2pipe2 core, reused across related reads.                                                                                                                 | Fixed SQLite repeats took a median 15.80 ms through retained REA versus 13.45 s with one-shot reload/analysis. Those fixed reads still needed a version-string dereference; agent task completion is a separate measure.                             |
-| r2mcp use                    | Reuse an explicitly selected upstream connection and its named tools for shared analysis; keep raw r2pipe2 access available only when enabled by the caller.                        | Typed discovery solved the task without raw access, with 20 calls / 189,830 tokens versus raw's 8 calls / 217,772 tokens. Neither interface wins every cost metric. Direct upstream results do not measure a future REA adapter.                     |
-| Other analysis providers     | Preserve the selected provider and expose r2's CFG, type and value-flow facts through the same analyst questions.                                                                   | The original three tasks did not compare these capabilities. The [capability follow-up](../experiments/radare2-transports/CAPABILITIES.md) adds executable experiment tools and real SQLite cases; production admission and Evidence remain pending. |
-| Display and metadata         | Owned defaults remain `scr.color=0`, `scr.utf8=0`. Preserve debug information and caller output choices.                                                                            | Clean display is already implemented and checked; token savings were not isolated. The benchmark's `asm.dwarf=false` prevented source-line shortcuts and is not a general recommendation to discard useful source/debug evidence.                    |
+| Decision                     | Proposed policy                                                                                                                                                                     | Evidence and limits                                                                                                                                                                                                                                                                        |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Selected r2 decompiler       | Recommend installed r2ghidra / `pdg`; use assembly directly when it answers the question. Keep pdc/decai explicit.                                                                  | All r2 task lanes used r2ghidra successfully; pdc/decai were not comparatively benchmarked. The raw SQLite agents needed no decompilation.                                                                                                                                                 |
+| Initial analysis             | Opening an owned core does not imply `aa` or `aaa`. Read known instructions/bytes first; request function-scoped analysis when needed, and basic `aa` for discovery when justified. | The raw SQLite agents answered from short instruction/literal reads; the typed agent chose `aa` and analysed 2,765 functions. `analyze(level:0)` means `aa`, not no analysis. Empty basic-analysis xrefs do not prove references absent.                                                   |
+| Existing connection          | Reuse the caller-selected session and its validated analysis; preserve external ownership and disclose unresolved target identity/freshness.                                        | Reuse avoids discarding useful work. HTTP/iaito performance and live freshness were not benchmarked; do not discover or attach to endpoints automatically.                                                                                                                                 |
+| New bounded command question | Prefer a one-shot batch of the required reads when no selected session exists.                                                                                                      | One-shot used fewer total tokens than the retained REA lane in all three agent tasks and finished those tasks sooner in this cohort. This is workflow guidance, not an automatic rewrite of caller commands.                                                                               |
+| New continuing investigation | Prefer an owned retained r2pipe2 core, reused across related reads.                                                                                                                 | Fixed SQLite repeats took a median 15.80 ms through retained REA versus 13.45 s with one-shot reload/analysis. Those fixed reads still needed a version-string dereference; agent task completion is a separate measure.                                                                   |
+| r2mcp use                    | Reuse an explicitly selected upstream connection and its named tools for shared analysis; keep raw r2pipe2 access available only when enabled by the caller.                        | Typed discovery solved the task without raw access, with 20 calls / 189,830 tokens versus raw's 8 calls / 217,772 tokens. Neither interface wins every cost metric. Direct upstream results do not measure a future REA adapter.                                                           |
+| Other analysis providers     | Preserve the selected provider and expose r2's CFG, type and value-flow facts through the same analyst questions.                                                                   | The original three tasks did not compare these capabilities. The [capability follow-up](https://github.com/morluto/rea/blob/main/experiments/radare2-transports/CAPABILITIES.md) adds executable experiment tools and real SQLite cases; production admission and Evidence remain pending. |
+| Display and metadata         | Owned defaults remain `scr.color=0`, `scr.utf8=0`. Preserve debug information and caller output choices.                                                                            | Clean display is already implemented and checked; token savings were not isolated. The benchmark's `asm.dwarf=false` prevented source-line shortcuts and is not a general recommendation to discard useful source/debug evidence.                                                          |
 
-The [capability task runs](../experiments/radare2-transports/CAPABILITY-BENCHMARK.md)
+The [capability task runs](https://github.com/morluto/rea/blob/main/experiments/radare2-transports/CAPABILITY-BENCHMARK.md)
 add one concrete requirement: expose focused byte reads beside references.
 All four original limit answers left a requested value unresolved; enabling
 byte reads resolved it in every corrected-profile run. Keep native status and
@@ -261,7 +261,7 @@ remains unmeasured.
 
 ## Authority, Evidence and integration decision
 
-The [concrete IDA-parity scope](../experiments/radare2-transports/IDA-PARITY.md)
+The [concrete IDA-parity scope](https://github.com/morluto/rea/blob/main/experiments/radare2-transports/IDA-PARITY.md)
 maps all 14 existing shared operations, defines reuse of #3521's session owner,
 and lists the required production verification. Its small session/contract
 compatibility check remains isolated; no runtime provider is registered.
@@ -307,7 +307,7 @@ for a synthetic child that ignores SIGINT and stdin EOF. REA's experiment uses
 its own r2pipe2 adapter and does not depend on `r2pipe-ts`; an upstream client
 release does not change this branch's runtime or its recorded measurements.
 
-The [isolated experiment](../experiments/radare2-transports/README.md) compiles a
+The [isolated experiment](https://github.com/morluto/rea/blob/main/experiments/radare2-transports/README.md) compiles a
 disposable source fixture and exercises actual local r2/r2mcp processes and a
 loopback r2 webserver. Its verifier requires installed r2ghidra and also checks
 pdc output, native JSON, logged command errors, malformed native JSON, HTTP
@@ -322,7 +322,7 @@ keyed only by file path. Scope selection and retained full Evidence should avoid
 returning raw output plus duplicate JSON/summary copies to the agent.
 
 The transport verifier's durations do not establish performance improvements.
-The separate [task comparison](../experiments/radare2-transports/BENCHMARK.md)
+The separate [task comparison](https://github.com/morluto/rea/blob/main/experiments/radare2-transports/BENCHMARK.md)
 measures actual Codex investigations and fixed cold/warm MCP queries through
 PR #3521, direct upstream r2mcp and Ghidra 12.1.4. It records model tokens,
 elapsed time, local CPU and sampled process-family RSS with finite correctness
@@ -334,12 +334,12 @@ failure/limit semantics remain unverified.
 
 ## Implementation review
 
-The [capability follow-up](../experiments/radare2-transports/CAPABILITIES.md)
+The [capability follow-up](https://github.com/morluto/rea/blob/main/experiments/radare2-transports/CAPABILITIES.md)
 supersedes the earlier experiment's missing CFG/type/flow surface. Its explicit
 CLI and separate MCP entrypoint now expose recovered CFG and instructions,
 database struct layouts, native access-pattern type synthesis, ESIL lifts and
 r2ghidra SSA dependencies, plus independently verified byte reads. The
-[SQLite capability comparison](../experiments/radare2-transports/CAPABILITY-BENCHMARK.md)
+[SQLite capability comparison](https://github.com/morluto/rea/blob/main/experiments/radare2-transports/CAPABILITY-BENCHMARK.md)
 records exact answers and partial coverage, whole-task tokens and resources
 before and after correcting the byte-read/type-import profile. This demonstrates
 r2 capabilities without registering a runtime provider. Ghidra's p-code contract currently requires metadata absent
