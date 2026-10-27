@@ -1032,12 +1032,7 @@ const purgeSelectedData = async (
   platform: NodeJS.Platform,
   fileSystem: UninstallFileSystem,
 ): Promise<readonly UninstallItem[]> => {
-  const items = [
-    ...(await purgeManagedData(appendCallerPath(home, ".rea"), fileSystem, [
-      "cache",
-      "state",
-    ])),
-  ];
+  const items: UninstallItem[] = [];
   const directories: string[] = [];
   if (platform === "darwin" || platform === "linux") {
     const defaultCache = defaultKunaCacheDirectory(home, environment, platform);
@@ -1064,6 +1059,14 @@ const purgeSelectedData = async (
     if (hopper.ok) directories.push(hopper.value);
     else items.push(item("hopper-releases", "failed", hopper.error.message));
   }
+  // Resolve selections before a managed namespace removal can delete cwd.
+  // Keep the existing result and removal order after planning those facts.
+  items.unshift(
+    ...(await purgeManagedData(appendCallerPath(home, ".rea"), fileSystem, [
+      "cache",
+      "state",
+    ])),
+  );
   for (const directory of directories)
     items.push(
       ...(await purgeManagedData(dirname(directory), fileSystem, [

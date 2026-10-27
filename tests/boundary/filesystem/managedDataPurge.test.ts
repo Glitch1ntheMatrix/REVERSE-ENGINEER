@@ -1,9 +1,76 @@
-import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 
 import { systemUninstallHost } from "../../../src/application/Uninstall.js";
+import { execFileOutput } from "../../../src/process/ExecFileOutput.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
+
+it.skipIf(process.platform === "win32").each([
+  { name: "cache", relative: false },
+  { name: "state", relative: false },
+  { name: "cache", relative: true },
+  { name: "state", relative: true },
+])(
+  "finishes purging after $name removes the working directory (relative selection: $relative)",
+  async ({ name, relative }) => {
+    const home = await createTestTempDirectory("rea-managed-cache-cwd-");
+    const cwd = join(home, ".rea", name);
+    const cacheRoot = join(home, "cache");
+    const cache = join(cacheRoot, "rea", "kuna");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(cache, { recursive: true });
+    await writeFile(join(cache, "cached"), "owned cache");
+    const callerCache = join(home, "caller-cache");
+    await mkdir(callerCache);
+    await writeFile(join(callerCache, "evidence"), "caller evidence");
+    const selected = relative ? "../../caller-cache" : `${cache}/`;
+    const moduleUrl = new URL(
+      "../../../dist/application/Uninstall.js",
+      import.meta.url,
+    ).href;
+    const result = await execFileOutput(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import { systemUninstallHost } from ${JSON.stringify(moduleUrl)};
+const [home, cwd, cacheRoot, selected] = process.argv.slice(1);
+const host = systemUninstallHost(home, undefined, {
+  XDG_CACHE_HOME: cacheRoot, REA_KUNA_CACHE_DIR: selected,
+}, "linux");
+// Reset Node's cwd cache after module loading, before the real removal.
+process.chdir(cwd);
+try { console.log(JSON.stringify(await host.purgeData())); }
+finally { await host.close?.(); }`,
+        home,
+        cwd,
+        cacheRoot,
+        selected,
+      ],
+      { timeout: 10_000, maxBuffer: 64 * 1024, stopSignal: "SIGTERM" },
+    );
+    expect(JSON.parse(result.stdout)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name, status: "removed" }),
+        expect.objectContaining({ name: "kuna", status: "removed" }),
+      ]),
+    );
+    await expect(lstat(cwd)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(cache)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(callerCache, "evidence"), "utf8")).toBe(
+      "caller evidence",
+    );
+    if (relative)
+      expect(JSON.parse(result.stdout)).toContainEqual(
+        expect.objectContaining({
+          name: "kuna-custom-cache",
+          status: "retained",
+          detail: expect.stringContaining(selected),
+        }),
+      );
+  },
+);
 
 it.each(["darwin", "linux"] as const)(
   "purges producer-owned default cache namespaces on %s and preserves their siblings",
