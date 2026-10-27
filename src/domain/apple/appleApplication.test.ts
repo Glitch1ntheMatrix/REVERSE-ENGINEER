@@ -10,7 +10,6 @@ import { AnalysisInputError } from "../analysisErrorCore.js";
 import { compareUnicodeCodePoints } from "../unicodeCodePointOrder.js";
 import { digestCanonicalValue } from "../canonicalDigest.js";
 import { createEvidence, type Evidence } from "../evidence.js";
-import { jsonValueSchema } from "../jsonValue.js";
 
 type EntryKind = "file" | "directory" | "symlink" | "slice";
 type RootFormat = "ipa" | "zip" | "dmg" | "directory" | "asar";
@@ -82,7 +81,14 @@ const inventoryEvidence = (
     limitations: [],
   });
   const nodes = new Map([[rootId, node(rootSha, rootFormat)]]);
-  const occurrences = [occurrence(".", "file", rootId, rootFormat)];
+  const occurrences = [
+    occurrence(
+      ".",
+      rootFormat === "directory" ? "directory" : "file",
+      rootId,
+      rootFormat,
+    ),
+  ];
   for (const {
     path,
     kind = "file",
@@ -136,7 +142,7 @@ const inventoryEvidence = (
       parameters: {},
       confidence: "observed",
       authority: "shipped-artifact",
-      result: jsonValueSchema.parse({
+      result: {
         manifest: {
           manifest_id: `agm_${digestCanonicalValue(
             { root_artifact_id: rootId, graph_sha256: graphSha256 },
@@ -157,7 +163,7 @@ const inventoryEvidence = (
         integrity_contradictions: [],
         coverage: { scope: "container-entries", status: "complete" },
         limitations: [],
-      }),
+      },
     },
   );
 };
@@ -929,3 +935,38 @@ it.each([
     expect(result.platforms).toEqual([]);
   },
 );
+
+it.each(["Core.framework", "Core.FRAMEWORK"])(
+  "uses the recognized %s role for framework components",
+  (name) => {
+    const framework = `Fixture.app/Contents/Frameworks/${name}`;
+    const result = project(
+      inventoryEvidence("directory", "Fixture.app", [
+        macho(`${framework}/Core`),
+        { path: `${framework}/Info.plist` },
+      ]),
+    );
+    expect(result.components.frameworks.map(({ path }) => path)).toEqual([
+      `${framework}/Core`,
+      `${framework}/Info.plist`,
+    ]);
+  },
+);
+
+it("preserves observed unavailable bundle metadata and signing paths without inventing executable content", () => {
+  const root = "Payload/Mobile.app";
+  const result = project(
+    inventoryEvidence("ipa", "Mobile.ipa", [
+      { path: `${root}/Info.plist`, unavailable: true },
+      { path: `${root}/_CodeSignature/CodeResources`, unavailable: true },
+      { path: `${root}/Main`, unavailable: true },
+    ]),
+  );
+  expect(result.bundles[0]).toMatchObject({
+    info_plist_path: `${root}/Info.plist`,
+    signing_paths: [`${root}/_CodeSignature/CodeResources`],
+    executable_candidates: [],
+  });
+  expect(result.platforms).toEqual(["ios"]);
+  expect(result.unavailable_components).toHaveLength(3);
+});

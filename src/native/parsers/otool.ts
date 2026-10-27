@@ -1,3 +1,8 @@
+import {
+  legacyMachoPlatform,
+  type MachoVersionMinPlatform,
+} from "../../domain/apple/machoPlatform.js";
+
 interface ParsedSection {
   readonly segment: string;
   readonly name: string;
@@ -40,7 +45,6 @@ interface ParsedLoadCommands {
     sdk: string | null;
     tools: Array<{ name: string; version: string }>;
   }>;
-  uuid: string | null;
   readonly flags: Set<string>;
   readonly omittedDependencyCommands: string[];
 }
@@ -69,6 +73,14 @@ const DYLIB_FIELDS = [
 // otool prints options for dylib_use_command and a timestamp for dylib_command.
 const DYLIB_ENCODING_FIELDS = ["time stamp", "options"];
 const EMPTY_VALUE_FIELDS = new Set(["options", "segname", "sectname"]);
+
+const VERSION_MIN_PLATFORMS: ReadonlyMap<string, MachoVersionMinPlatform> =
+  new Map([
+    ["LC_VERSION_MIN_MACOSX", 1],
+    ["LC_VERSION_MIN_IPHONEOS", 2],
+    ["LC_VERSION_MIN_TVOS", 3],
+    ["LC_VERSION_MIN_WATCHOS", 4],
+  ]);
 
 /**
  * Non-verbose otool prints LC_BUILD_VERSION platform and tool codes as
@@ -145,7 +157,6 @@ export const parseOtoolLoadCommands = (raw: string) => {
     endian: header.cpuType === null ? null : cpuEndian(header.cpuType),
     fileType: header.fileType,
     flags: [...state.flags].sort(),
-    uuid: state.uuid,
     commands: state.commands,
     segments: state.segments,
     dependencies: state.dependencies,
@@ -273,7 +284,6 @@ const createLoadCommandState = (
   dependencies: [],
   entrypoints: [],
   builds: [],
-  uuid: null,
   flags: new Set(headerFlags ?? []),
   omittedDependencyCommands: [],
 });
@@ -297,9 +307,8 @@ const parseLoadCommand = (block: string, state: ParsedLoadCommands): void => {
     kind,
     fields,
   });
-  collectUuid(kind, fields, state);
   collectEntrypoint(kind, fields, state);
-  collectBuild(kind, block, fields, state);
+  collectBuild(kind, parsed, state);
   collectDependency(kind, fields, state);
   if (PAYLOAD_DEPENDENCY_COMMANDS.has(kind))
     state.omittedDependencyCommands.push(kind);
@@ -366,15 +375,6 @@ const scalarFields = (kind: string): readonly string[] => {
   return common;
 };
 
-const collectUuid = (
-  kind: string,
-  fields: Readonly<Record<string, string | number | null>>,
-  state: ParsedLoadCommands,
-): void => {
-  if (kind === "LC_UUID")
-    state.uuid = stringField(fields, "uuid") ?? state.uuid;
-};
-
 const collectEntrypoint = (
   kind: string,
   fields: Readonly<Record<string, string | number | null>>,
@@ -387,12 +387,12 @@ const collectEntrypoint = (
 
 const collectBuild = (
   kind: string,
-  block: string,
-  fields: Readonly<Record<string, string | number | null>>,
+  parsed: ParsedFields,
   state: ParsedLoadCommands,
 ): void => {
+  const fields = parsed.values;
   if (kind === "LC_BUILD_VERSION") {
-    const tools = parseBuildTools(block);
+    const tools = parseBuildTools(parsed.rows);
     if (numberField(fields, "ntools") !== tools.length)
       throw new TypeError("otool build-tool count does not match ntools");
     state.builds.push({
@@ -408,31 +408,21 @@ const collectBuild = (
   }
   if (kind.startsWith("LC_VERSION_MIN_")) {
     const platform = kind.slice("LC_VERSION_MIN_".length) || null;
+    const devicePlatform = VERSION_MIN_PLATFORMS.get(kind);
+    const derivedPlatform =
+      devicePlatform === undefined
+        ? undefined
+        : legacyMachoPlatform(devicePlatform, state.cpuType);
     state.builds.push({
-      platform: legacySimulatorPlatform(platform, state.cpuType),
+      platform:
+        derivedPlatform === undefined || derivedPlatform === devicePlatform
+          ? platform
+          : buildCodeName(BUILD_PLATFORM_NAMES, String(derivedPlatform)),
       minimum_os: stringField(fields, "version"),
       sdk: stringField(fields, "sdk"),
       tools: [],
     });
   }
-};
-
-// Apple dyld interprets legacy iOS/tvOS/watchOS minimum-version commands on
-// Intel slices as simulator platforms. Newer commands encode this directly.
-const legacySimulatorPlatform = (
-  platform: string | null,
-  cpuType: number | null,
-): string | null => {
-  if (![7, 0x01000007].includes(cpuType ?? -1)) return platform;
-  return (
-    (
-      {
-        IPHONEOS: "IOSSIMULATOR",
-        TVOS: "TVOSSIMULATOR",
-        WATCHOS: "WATCHOSSIMULATOR",
-      } as const
-    )[platform as "IPHONEOS" | "TVOS" | "WATCHOS"] ?? platform
-  );
 };
 
 const collectDependency = (
@@ -483,7 +473,7 @@ const parseFields = (block: string): ParsedFields => {
   for (const field of rows)
     if (field !== undefined)
       occurrences.set(field[0], (occurrences.get(field[0]) ?? 0) + 1);
-  const fields: Record<string, string | number | null> = {};
+  const fields = new Map<string, string | number | null>();
   const ordinals = new Map<string, number>();
   for (const field of rows) {
     if (field === undefined) continue;
@@ -492,9 +482,12 @@ const parseFields = (block: string): ParsedFields => {
     ordinals.set(key, ordinal);
     const label =
       (occurrences.get(key) ?? 0) > 1 ? `${key} #${String(ordinal)}` : key;
-    fields[label] = TEXT_FIELDS.test(key) ? value : (numeric(value) ?? value);
+    fields.set(
+      label,
+      TEXT_FIELDS.test(key) ? value : (numeric(value) ?? value),
+    );
   }
-  return { values: fields, rows };
+  return { values: Object.fromEntries(fields), rows };
 };
 
 /** Names and linker options are text even when they look numeric. */
@@ -507,10 +500,19 @@ const TEXT_FIELDS = /^(?:segname|sectname|string #\d+)$/u;
  */
 const OFFSET_STRING_FIELD = /^(name|path) (.* \(offset \d+\))$/u;
 
+/**
+ * otool prints segment and section names as `<key> %.16s`: one separator
+ * space, then the fixed-width name, whose own leading and trailing whitespace
+ * belongs to the Mach-O value.
+ */
+const MACHO_NAME_FIELD = /^(segname|sectname)(?: (.*))?$/u;
+
 const parseField = (rawLine: string): readonly [string, string] | undefined => {
   const offsetString = OFFSET_STRING_FIELD.exec(rawLine.trimStart());
   if (offsetString?.[1] !== undefined && offsetString[2] !== undefined)
     return [offsetString[1], offsetString[2]];
+  const name = MACHO_NAME_FIELD.exec(rawLine.trimStart());
+  if (name?.[1] !== undefined) return [name[1], name[2] ?? ""];
   // otool prints each linker option as `string #n <option>`; keep the option
   // exactly, including surrounding spaces, under otool's ordinal label.
   const option = /^\s*(string #[1-9]\d*)(?: (.*))?$/u.exec(rawLine);
@@ -582,16 +584,23 @@ const parseSections = (block: string): ParsedSection[] =>
       };
     });
 
+/** Project tool/version pairs from the same ordered facts as command fields. */
 const parseBuildTools = (
-  block: string,
+  rows: ParsedFields["rows"],
 ): Array<{ name: string; version: string }> => {
   const tools: Array<{ name: string; version: string }> = [];
-  const lines = block.split(/\r?\n/u).map((line) => line.trim());
-  for (let index = 0; index < lines.length - 1; index += 1) {
-    const tool = /^tool\s+(.+)$/u.exec(lines[index] ?? "")?.[1];
-    const version = /^version\s+(.+)$/u.exec(lines[index + 1] ?? "")?.[1];
-    if (tool !== undefined && version !== undefined)
-      tools.push({ name: BUILD_TOOL_NAMES.get(tool) ?? tool, version });
+  for (let index = 0; index < rows.length; index++) {
+    const field = rows[index];
+    if (field?.[0] === "version")
+      throw new TypeError("otool build-tool version has no preceding tool");
+    if (field?.[0] !== "tool") continue;
+    const version = rows[++index];
+    if (field[1] === "" || version?.[0] !== "version" || version[1] === "")
+      throw new TypeError("otool build tool is missing its name or version");
+    tools.push({
+      name: BUILD_TOOL_NAMES.get(field[1]) ?? field[1],
+      version: version[1],
+    });
   }
   return tools;
 };

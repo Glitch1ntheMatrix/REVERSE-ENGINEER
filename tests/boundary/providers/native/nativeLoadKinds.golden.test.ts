@@ -207,6 +207,50 @@ it.each([
   },
 );
 
+it("keeps the surrounding spaces of segment and section names", () => {
+  // Captured from `otool -l` on an object whose section is " sec " in segment
+  // " seg ": otool prints one space after the label, then the stored name.
+  const output = [
+    "Load command 0",
+    "      cmd LC_SEGMENT_64",
+    "  cmdsize 152",
+    "  segname ",
+    "   vmaddr 0x0000000000000000",
+    "   vmsize 0x0000000000000008",
+    "  fileoff 184",
+    " filesize 8",
+    "  maxprot 0x00000007",
+    " initprot 0x00000007",
+    "   nsects 1",
+    "    flags 0x0",
+    "Section",
+    "  sectname  sec ",
+    "   segname  seg ",
+    "      addr 0x0000000000000000",
+    "      size 0x0000000000000008",
+    "    offset 184",
+    "     align 2^0 (1)",
+    "    reloff 0",
+    "    nreloc 0",
+    "     flags 0x00000000",
+    " reserved1 0",
+    " reserved2 0",
+    "",
+  ].join("\n");
+
+  expect(
+    parseOtoolLoadCommands(withOtoolMachHeader(output)).segments,
+  ).toMatchObject([
+    { name: "", sections: [{ segment: " seg ", name: " sec " }] },
+  ]);
+
+  const named = parseOtoolLoadCommands(
+    withOtoolMachHeader(output.replace("  segname \n", "  segname  seg \n")),
+  );
+  expect(named.commands[0]?.fields.segname).toBe(" seg ");
+  expect(named.segments[0]?.name).toBe(" seg ");
+});
+
 it("preserves dependency install names that begin with the word stamp", () => {
   const load = parseOtoolLoadCommands(
     withOtoolMachHeader(
@@ -550,4 +594,62 @@ it.each([
     ),
   );
   expect(load.builds[0]?.tools).toEqual([{ name, version: "1.0" }]);
+});
+
+it("projects build tools from the retained ordered field facts", () => {
+  const load = parseOtoolLoadCommands(
+    withOtoolMachHeader(
+      [
+        "Load command 0",
+        "cmd LC_BUILD_VERSION",
+        "cmdsize 40",
+        "platform 1",
+        "minos 1.0",
+        "sdk 1.0",
+        "ntools 2",
+        "tool 1",
+        "",
+        "version 001",
+        "tool 99",
+        "version 0x10",
+        "",
+      ].join("\n"),
+    ),
+  );
+  expect(load.builds[0]?.tools).toEqual([
+    { name: "CLANG", version: "001" },
+    { name: "99", version: "0x10" },
+  ]);
+  expect(load.commands[0]?.fields).toMatchObject({
+    "tool #1": 1,
+    "tool #2": 99,
+    "version #1": 1,
+    "version #2": 16,
+  });
+});
+
+it.each([
+  ["version 9.0", "tool 1", "version 1.0"],
+  ["tool 1", "version 1.0", "tool 2"],
+  ["tool 1", "version 1.0", "version 2.0"],
+  ["tool 1", "unexpected 2", "version 1.0"],
+  ["tool 1", "version"],
+])("rejects unpaired build tool/version facts: %j", (...toolRows) => {
+  expect(() =>
+    parseOtoolLoadCommands(
+      withOtoolMachHeader(
+        [
+          "Load command 0",
+          "cmd LC_BUILD_VERSION",
+          "cmdsize 32",
+          "platform 1",
+          "minos 1.0",
+          "sdk 1.0",
+          "ntools 1",
+          ...toolRows,
+          "",
+        ].join("\n"),
+      ),
+    ),
+  ).toThrow(/otool build.tool/u);
 });

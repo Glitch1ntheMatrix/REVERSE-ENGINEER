@@ -20,7 +20,7 @@ import { registerBinaryDiagnosticsCommands } from "./cli/binaryDiagnosticsComman
 import { registerFridaCommands } from "./cli/fridaCommands.js";
 import type { FridaInstrumentationPort } from "./application/frida/FridaInstrumentationPort.js";
 import { Cli } from "incur";
-import { normalizeCliArguments } from "./cliOutput.js";
+import { normalizeCliArguments } from "./cliBuiltinArguments.js";
 
 import { createLogger } from "./logger.js";
 import { parseLogLevel } from "./config/processStart.js";
@@ -62,6 +62,9 @@ import {
 import { registerReverseEngineeringCommands } from "./cli/reverseEngineeringCommands.js";
 import { registerCutterCommands } from "./cli/cutterCommands.js";
 import { excludeDeclaredSensitiveArguments } from "./cli/explicitSensitiveArguments.js";
+import { rejectSurplusCliArguments } from "./cli/strictPositionals.js";
+import { presentCliArgumentErrors } from "./cli/argumentErrors.js";
+import { createCliCompletions } from "./cli/completions.js";
 
 export { closeCliJavaScriptResources } from "./cli/javascriptApplicationAnalysis.js";
 
@@ -144,7 +147,7 @@ export const createCli = (
   registerFirmwareCommands(cli, logger, environment);
   registerBinaryDiagnosticsCommands(cli, logger, environment);
   registerAnalysisViewCommands(cli, logger);
-  registerNativeFunctionMatchingCommands(cli, logger);
+  registerNativeFunctionMatchingCommands(cli, logger, environment);
   registerFridaCommands(cli, logger, fridaInstrumentation);
   registerEvidenceCommands(cli, logger);
   registerEnvironmentCommands(cli, logger, environment);
@@ -163,9 +166,18 @@ export const createCli = (
   registerApplicationCommands(cli, logger);
   presentOmittableDefaults(cli);
   if (resultOutput !== undefined) streamCliCommandResults(cli, resultOutput);
+  const serveStrict = rejectSurplusCliArguments(cli);
+  presentCliArgumentErrors(cli);
   const serveDeclared = excludeDeclaredSensitiveArguments(cli);
   const serve = cli.serve.bind(cli);
+  const complete = createCliCompletions(cli, environment);
   cli.serve = (arguments_ = process.argv.slice(2), options) =>
-    serveDeclared(normalizeCliArguments(arguments_), options ?? {}, serve);
+    complete(arguments_, options ?? {})
+      ? Promise.resolve()
+      : serveStrict(
+          normalizeCliArguments(arguments_),
+          options ?? {},
+          (tokens, selected) => serveDeclared(tokens, selected, serve),
+        );
   return cli;
 };

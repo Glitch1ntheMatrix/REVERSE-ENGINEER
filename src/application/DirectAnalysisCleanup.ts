@@ -1,4 +1,3 @@
-import type { Evidence } from "../domain/evidence.js";
 import type { AnalysisError } from "../domain/analysisErrorBase.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import { jsonValueSchema, type JsonValue } from "../domain/jsonValue.js";
@@ -33,12 +32,13 @@ export const withSessionCleanup = async <Value>(
 
 /** Project typed one-shot outcomes only after execution and cleanup settle. */
 export const directAnalysisCleanupFailure = (
-  result: Result<Evidence, AnalysisError>,
+  result: Result<JsonValue, AnalysisError>,
   error: AnalysisError,
 ): JsonValue => {
   const cleanup = projectAnalysisError(error);
   if (!result.ok) {
     const primary = projectAnalysisError(result.error);
+    const combined = analysisErrorWithCleanupFailure(result.error, error);
     return {
       error: "Analysis failed",
       ...primary,
@@ -46,8 +46,10 @@ export const directAnalysisCleanupFailure = (
       retryable: false,
       remediation: cleanup.remediation,
       details: {
-        resources: error.cleanupResources.slice(),
         ...primary.details,
+        // The domain composition owns the union of still-retained resources;
+        // neither projection may overwrite the other owner's cleanup state.
+        resources: [...combined.cleanupResources],
         cleanup: "incomplete",
         execution_failure: primary.details?.execution_failure ?? primary.code,
         cleanup_error: cleanup,
@@ -72,22 +74,33 @@ export const managedAnalysisCleanupFailure = (
   result: Result<AnalysisExecution, AnalysisError>,
   error: AnalysisError,
 ): Result<AnalysisExecution, AnalysisError> => {
-  if (!result.ok)
-    return err(analysisErrorWithCleanupFailure(result.error, error));
+  // A close rejection without a live cleanup state has unknown completion;
+  // an empty dependency set must not turn that rejection into confirmed cleanup.
+  if (!result.ok) {
+    const failure = analysisErrorWithCleanupFailure(result.error, error);
+    return err(
+      error.cleanupIncomplete
+        ? failure.bindCleanupDependencies([result.error, error])
+        : failure,
+    );
+  }
   const cleanup = projectAnalysisError(error);
-  return err(
-    new ProviderAdapterError(
-      error instanceof ProviderAdapterError ? error.providerId : "rea",
-      "close_binary",
-      {
-        cause: error,
-        remediationAction: cleanup.remediation.action,
-        cleanup: { reason: cleanup.message, resources: error.cleanupResources },
-        diagnostics: {
-          cleanup_error: cleanup,
-          partial_observation: jsonValueSchema.parse(result.value),
-        },
+  const failure = new ProviderAdapterError(
+    error instanceof ProviderAdapterError ? error.providerId : "rea",
+    "close_binary",
+    {
+      cause: error,
+      remediationAction: cleanup.remediation.action,
+      cleanup: { reason: cleanup.message, resources: error.cleanupResources },
+      diagnostics: {
+        cleanup_error: cleanup,
+        partial_observation: jsonValueSchema.parse(result.value),
       },
-    ),
+    },
+  );
+  return err(
+    error.cleanupIncomplete
+      ? failure.bindCleanupDependencies([error])
+      : failure,
   );
 };

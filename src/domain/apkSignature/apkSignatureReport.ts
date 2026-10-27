@@ -412,7 +412,10 @@ export const deriveApkPosture = (
     ),
   );
   const v1Match = input.v1Present
-    ? v1MatchesBlockSigners(input.v1SignerFingerprints, present[0])
+    ? v1MatchesBlockSigners(
+        input.v1SignerFingerprints,
+        present.find(({ signers }) => signers.length > 0),
+      )
     : { match: null, note: null };
   return {
     posture: {
@@ -437,13 +440,12 @@ export const deriveApkPosture = (
   };
 };
 
-/** The returned artifact identity must match the caller-selected local file. */
+/** Match semantic artifact identity; local subject paths are delivery metadata. */
 export const apkSignatureMatchesSubject = (
   artifact: ApkSignatureResult["artifact"],
-  subject: EvidenceSubjectTarget,
+  subject: Pick<EvidenceSubjectTarget, "sha256" | "format">,
 ): boolean =>
   artifact.sha256 === subject.sha256 &&
-  artifact.path === subject.path &&
   (subject.format === "file" ||
     subject.format === "apk" ||
     subject.format === "zip");

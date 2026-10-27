@@ -1,5 +1,11 @@
+import { projectCliAnalysisResult } from "./projectCliAnalysisResult.js";
 import { nativeDispatchMetadataInputSchema } from "../domain/native/objcSwiftMetadata.js";
 import { z } from "incur";
+import {
+  addressOrProcedureGuidance,
+  equalSelectorGuidance,
+  resolveCliAnalysisSelector,
+} from "./analysisSelector.js";
 
 import type { DirectAnalysis } from "../composition/directAnalysis.js";
 import { CLI_COMMANDS } from "../cliCommandNames.js";
@@ -11,6 +17,13 @@ import {
   snapshotSelectionOption,
 } from "./options.js";
 import type { CliInstance } from "./types.js";
+import { withCommandCancellation } from "./commandCancellation.js";
+import {
+  analysisEvidenceDeliveryOptions,
+  cliEvidenceDeliveryInputError,
+  publishCliAnalysisEvidence,
+} from "./analysisEvidenceDelivery.js";
+import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 
 /** Register native load-image, memory, and annotation CLI commands. */
 export const registerCoreNativeCommands = (
@@ -56,24 +69,37 @@ export const registerCoreNativeCommands = (
             ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
           },
           directAnalysisOptionsFromCli(logger, options),
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
   cli.command(CLI_COMMANDS.inspectNativeLoadImage, {
     description:
-      "Verify loaded native bytes, source mappings, relocations and entry",
+      "Inspect native load observations and supported snapshot verification",
     args: z.object({ path: z.string().describe("Local executable path") }),
     options: z.object({
+      ...analysisEvidenceDeliveryOptions,
       ...nativeOpenOptionFields,
     }),
     run: ({ args, options }) =>
-      logCliCommand(logger, CLI_COMMANDS.inspectNativeLoadImage, () =>
-        runDirectAnalysis(
-          args.path,
-          "inspect_native_load_image",
-          {},
-          directAnalysisOptionsFromCli(logger, options),
-        ),
+      withCommandCancellation((signal) =>
+        logCliCommand(logger, CLI_COMMANDS.inspectNativeLoadImage, async () => {
+          const delivery = {
+            providerId: "auto",
+            operation: "inspect_native_load_image",
+            signal,
+            detail: options.detail,
+            evidenceOutput: options.evidence_output,
+          };
+          const invalid = cliEvidenceDeliveryInputError(delivery);
+          if (invalid !== undefined) return projectAnalysisError(invalid);
+          const complete = await runDirectAnalysis(
+            args.path,
+            "inspect_native_load_image",
+            {},
+            { ...directAnalysisOptionsFromCli(logger, options), signal },
+          );
+          return publishCliAnalysisEvidence(complete, delivery);
+        }),
       ),
   });
   cli.command(CLI_COMMANDS.readBytes, {
@@ -98,7 +124,7 @@ export const registerCoreNativeCommands = (
           "read_bytes",
           { address: args.address, length: options.length },
           directAnalysisOptionsFromCli(logger, options),
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
   cli.command(CLI_COMMANDS.addressToFileOffset, {
@@ -117,7 +143,7 @@ export const registerCoreNativeCommands = (
           "address_to_file_offset",
           { address: args.address },
           directAnalysisOptionsFromCli(logger, options),
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
   cli.command(CLI_COMMANDS.traceNativeValues, {
@@ -195,7 +221,7 @@ export const registerCoreNativeCommands = (
             limit: options.limit,
           },
           directAnalysisOptionsFromCli(logger, options),
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
   cli.command(CLI_COMMANDS.inspectNativeDataType, {
@@ -220,7 +246,7 @@ export const registerCoreNativeCommands = (
               : { address: options.address }),
           },
           directAnalysisOptionsFromCli(logger, options),
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
   for (const [command, operation] of [
@@ -246,7 +272,7 @@ export const registerCoreNativeCommands = (
             operation,
             { address: args.address },
             directAnalysisOptionsFromCli(logger, options),
-          ),
+          ).then(projectCliAnalysisResult),
         ),
     });
   }
@@ -287,7 +313,7 @@ const registerNativeDispatchMetadataCommand = (
               : { max_input_bytes: options.maxInputBytes }),
           },
           directAnalysisOptionsFromCli(logger, options),
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };
@@ -345,7 +371,7 @@ const registerNativeUiActionCommand = (
             max_edges: options.maxEdges,
           },
           directAnalysisOptionsFromCli(logger, options),
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };
@@ -356,12 +382,21 @@ const registerNativeApiCommand = (
   runDirectAnalysis: DirectAnalysis["runDirectAnalysis"],
 ): void => {
   cli.command(CLI_COMMANDS.inspectNativeApi, {
-    description: "Reconstruct one native function API boundary with evidence",
+    description: `Reconstruct one native function API boundary with evidence. ${addressOrProcedureGuidance} ${equalSelectorGuidance}`,
     args: z.object({
       path: z.string().describe("App or program path"),
-      address: z.string().describe("Procedure name or address"),
+      address: z
+        .string()
+        .optional()
+        .describe(`Procedure name or address. ${addressOrProcedureGuidance}`),
     }),
     options: z.object({
+      procedure: z
+        .string()
+        .optional()
+        .describe(
+          `Procedure selector; use this option for symbols beginning with a dash. ${addressOrProcedureGuidance}`,
+        ),
       snapshot: snapshotSelectionOption,
       ...nativeOpenOptionFields,
     }),
@@ -370,9 +405,16 @@ const registerNativeApiCommand = (
         runDirectAnalysis(
           args.path,
           "inspect_native_api",
-          { procedure: args.address },
+          {
+            procedure: resolveCliAnalysisSelector(
+              args.address,
+              options.procedure,
+              "procedure",
+              "inspect_native_api",
+            ),
+          },
           directAnalysisOptionsFromCli(logger, options),
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };
@@ -418,7 +460,7 @@ const registerAnnotationCommand = (
               : { inline_comment: options["inline-comment"] }),
           },
           directAnalysisOptionsFromCli(logger, options),
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };
