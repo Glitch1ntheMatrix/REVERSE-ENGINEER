@@ -9,17 +9,15 @@ import {
   type WindowsNativeLoadHost,
 } from "./WindowsNativeLoader.js";
 
-const machines = { x64: 0x8664, arm64: 0xaa64 } as const;
-
 const fixture = (
   capabilities: {
     protocolStdin?: boolean;
     jobMemoryLimit?: unknown;
     privateBridgeDescriptorAccess?: unknown;
   } = {},
-  architecture: keyof typeof machines = "x64",
+  architecture: "x64" | "arm64" = "x64",
 ) => {
-  const { bytes, manifest } = windowsNativeArtifactFixture();
+  const { bytes, manifest } = windowsNativeArtifactFixture(architecture);
   const identity = {
     requestedPath: "D:\\fixture\\runtime",
     finalPath: "\\\\?\\D:\\fixture\\runtime",
