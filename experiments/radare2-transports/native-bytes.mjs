@@ -1,6 +1,7 @@
 // Isolated byte observation; never registered by REA's production composition.
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { AnalysisError } from "../../dist/domain/analysisErrorBase.js";
 import {
   AnalysisArtifactChangedError,
   AnalysisCancelledError,
@@ -237,6 +238,9 @@ async function withRegularFile(path, signal, operation) {
       const details = {
         cause: cancelled ? cancelled.reason : cause,
         partialObservation,
+        ...(outcome?.kind === "failed" && outcome.cause instanceof AnalysisError
+          ? { cleanupPrimary: outcome.cause }
+          : {}),
         ...(cause instanceof RegularFileCleanupFailure
           ? {
               cleanup: {

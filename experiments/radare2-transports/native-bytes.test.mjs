@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { RegularFileCleanupFailure } from "../../dist/filesystem/OwnedRegularFile.js";
 import { projectAnalysisError } from "../../dist/domain/analysisErrorProjection.js";
+import { observationError } from "./observation-error.mjs";
 import {
   byteInputSchema,
   digestTarget,
@@ -434,6 +435,64 @@ void test("target digests reject append and same-size writes during the descript
         .update(await fs.readFile(selected))
         .digest("hex"),
     );
+  }
+});
+
+void test("a changed target stays the primary error across failed close and consumer cleanup retry", async (context) => {
+  const selected = join(folder, "changed-with-pending-close");
+  await writeFile(selected, fixture);
+  const originalOpen = fs.open;
+  let denied = true;
+  let changed = false;
+  let failure;
+  let composed;
+  const intercepted = context.mock.method(fs, "open", async (...args) => {
+    const handle = await originalOpen(...args);
+    const read = handle.read.bind(handle);
+    const close = handle.close.bind(handle);
+    handle.read = async (...readArgs) => {
+      const value = await read(...readArgs);
+      if (!changed) {
+        changed = true;
+        await fs.appendFile(selected, "changed");
+      }
+      return value;
+    };
+    handle.close = async () => {
+      if (denied) throw new Error("Injected close denial");
+      return close();
+    };
+    return handle;
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(digestTarget(selected), (cause) => {
+      failure = cause;
+      return true;
+    });
+    assert.equal(failure.cleanupPrimary._tag, "AnalysisArtifactChangedError");
+    assert.equal(failure.cleanupPrimary.path, selected);
+    composed = observationError(failure, "consumer", "Digest failed", {
+      selected,
+    });
+    for (const value of [failure, composed]) {
+      assert.equal(projectAnalysisError(value).code, "cleanup_incomplete");
+      assert.equal(value.cleanupIncomplete, true);
+      assert.deepEqual(value.cleanupResources, [selected]);
+    }
+    assert.equal(await retryNativeByteCleanup(), 1);
+  } finally {
+    denied = false;
+    assert.equal(await retryNativeByteCleanup(), 0);
+    intercepted.mock.restore();
+    syncBuiltinESMExports();
+  }
+  for (const value of [failure, composed]) {
+    const projection = projectAnalysisError(value);
+    assert.equal(value.cleanupIncomplete, false);
+    assert.equal(projection.code, "artifact_changed");
+    assert.equal(projection.retryable, true);
+    assert.equal(projection.details.path, selected);
   }
 });
 
