@@ -5,11 +5,6 @@ import {
   elfNativeExportsSchema as elf,
   type NativeExports,
 } from "../native/nativeExports.js";
-import {
-  canBorrowParsedJsonSnapshot,
-  freezeOwnedJsonTreeSnapshot,
-  isImmutableJsonSnapshot,
-} from "../immutableJson.js";
 import type { AnalysisError } from "../analysisErrorBase.js";
 import { err, ok, type Result } from "../result.js";
 import type {
@@ -18,7 +13,7 @@ import type {
   UnsignedAnalysisView,
 } from "./analysisView.js";
 import { analysisViewInputError } from "./analysisViewErrors.js";
-import { parseAnalysisViewResult } from "./analysisViewParent.js";
+import { createAnalysisViewResultReader } from "./analysisViewParent.js";
 import {
   boundedViewMessages,
   completeWithinViewCoverage,
@@ -43,7 +38,12 @@ export const nativeExportsViewRequestSchema = z.discriminatedUnion(
     z.strictObject({
       ...page,
       collection: z.literal("exports"),
-      names: z.array(z.string()).optional(),
+      names: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Exact PE names, or UTF-8 ELF source names. ELF display fallbacks and names with unknown encoding are not identities; use indices for those rows. Omitted includes all names; [] matches none.",
+        ),
       indices: z.array(z.int().nonnegative()).optional(),
       fields: z.array(z.union([peRow.keyof(), elfRow.keyof()])).optional(),
     }),
@@ -83,31 +83,7 @@ export const nativeExportsSummarySchema = z.discriminatedUnion("format", [
   elf.omit({ exports: true, issues: true, limitations: true }).extend(counts),
 ]);
 
-// This validates exact immutable Evidence, never a path or current filesystem state.
-// Weak keys release their parsed representation with the owning retained record.
-const checked = new WeakMap<object, NativeExports>();
-const readReport = (
-  parent: AnalysisViewParent,
-): Result<NativeExports, AnalysisError> => {
-  const source = parent.normalizedResult;
-  const reusable =
-    parent.sealedResult === true &&
-    typeof source === "object" &&
-    source !== null &&
-    isImmutableJsonSnapshot(source);
-  const known = reusable ? checked.get(source) : undefined;
-  if (known !== undefined) return ok(known);
-  const parsed = parseAnalysisViewResult(nativeExportsSchema, parent);
-  if (!parsed.ok) return parsed;
-  if (reusable) {
-    const report = canBorrowParsedJsonSnapshot(source, parsed.value)
-      ? source
-      : freezeOwnedJsonTreeSnapshot(parsed.value);
-    checked.set(source, report);
-    return ok(report);
-  }
-  return parsed;
-};
+const readReport = createAnalysisViewResultReader(nativeExportsSchema);
 
 /** Read selected export facts without reopening the artifact or reinterpreting its tables. */
 export const projectNativeExportsView = (
@@ -203,6 +179,32 @@ export const projectNativeExportsView = (
       `Selected export fields do not belong to ${report.format}; available fields: ${allowed.join(", ")}.`,
     );
   const names = view.names === undefined ? undefined : new Set(view.names);
+  const encodedNames =
+    names === undefined
+      ? undefined
+      : new Set(
+          [...names].flatMap((name) => {
+            const bytes = Buffer.from(name, "utf8");
+            return bytes.toString("utf8") === name
+              ? [bytes.toString("base64")]
+              : [];
+          }),
+        );
+  if (
+    names !== undefined &&
+    names.size > 0 &&
+    report.format === "elf" &&
+    report.exports.some(
+      (row) =>
+        row.name_utf8_decodable === null ||
+        (row.name_utf8_decodable &&
+          row.name_bytes_base64 === null &&
+          !/^[\x00-\x7f]*$/u.test(row.name)),
+    )
+  )
+    shared.unknowns.push(
+      "Some ELF names lack retained encoding facts and cannot be matched by UTF-8 identity; select their source indices. A no-match page does not establish their absence.",
+    );
   // A projected decoded name still carries its exact bytes and encoding qualification.
   const columns = new Set<string>(fields);
   if (report.format === "elf" && columns.has("name")) {
@@ -233,7 +235,13 @@ export const projectNativeExportsView = (
           view,
           (row, index) =>
             (indices === undefined || indices.has(index)) &&
-            (names === undefined || (row.name !== null && names.has(row.name))),
+            (names === undefined ||
+              ("name_utf8_decodable" in row
+                ? row.name_utf8_decodable === true &&
+                  (row.name_bytes_base64 !== null
+                    ? encodedNames!.has(row.name_bytes_base64)
+                    : /^[\x00-\x7f]*$/u.test(row.name) && names.has(row.name))
+                : row.name !== null && names.has(row.name))),
           projectRow,
         );
   return ok({

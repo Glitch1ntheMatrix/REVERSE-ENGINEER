@@ -8,14 +8,14 @@ import { workspaceCliTest } from "../../support/cli/workspaceCliFixture.js";
 import type { TestWorkspace } from "../../support/workspace/workspaceFixture.js";
 
 const CLI_OUTPUT_RUNTIME =
-  "export const cliConfigurationError = () => undefined; export const normalizeCliArguments = (args) => args; export const parseCliOutputArguments = () => ({ validation: { ok: true } }); export const renderCliOutputArgumentError = () => ''; export const renderEmptyFilteredCliOutput = () => undefined; export const renderVersionReport = () => undefined;\n";
+  "export const cliConfigurationError = () => undefined; export const parseCliOutputArguments = () => ({ validation: { ok: true } }); export const renderCliOutputArgumentError = () => ''; export const renderEmptyFilteredCliOutput = () => undefined; export const renderVersionReport = () => undefined;\n";
 
 const installCliRuntime = async (
   workspace: TestWorkspace,
   cliSource: string,
   resultOutput = "export const createCliResultOutput = () => undefined;\n",
 ): Promise<void> => {
-  await workspace.mkdir("scripts");
+  await workspace.mkdir("scripts/lib");
   await workspace.mkdir("dist");
   // The bundle's entrypoints and shared chunks form one emitted runtime.
   await cp("dist/cli-runtime", workspace.path("dist/cli-runtime"), {
@@ -23,6 +23,10 @@ const installCliRuntime = async (
   });
   await Promise.all([
     copyFile("scripts/rea.mjs", workspace.path("scripts/rea.mjs")),
+    copyFile(
+      "scripts/lib/cli-process-environment.mjs",
+      workspace.path("scripts/lib/cli-process-environment.mjs"),
+    ),
     workspace.write(
       "package.json",
       JSON.stringify({ type: "module", version: "1.0.0" }),
@@ -289,8 +293,13 @@ describe("executable dispatcher", () => {
     "explains how to restore a missing compiled runtime",
     async ({ processes, workspace }) => {
       const scripts = await workspace.mkdir("scripts");
+      await workspace.mkdir("scripts/lib");
       await Promise.all([
         copyFile("scripts/rea.mjs", join(scripts, "rea.mjs")),
+        copyFile(
+          "scripts/lib/cli-process-environment.mjs",
+          workspace.path("scripts/lib/cli-process-environment.mjs"),
+        ),
         workspace.write(
           "package.json",
           JSON.stringify({ type: "module", version: "1.0.0" }),

@@ -6,8 +6,8 @@ import { describe, expect, it } from "vitest";
 
 import { workspaceCliTest } from "../../support/cli/workspaceCliFixture.js";
 
+import { normalizeCliArguments } from "../../../src/cliBuiltinArguments.js";
 import {
-  normalizeCliArguments,
   renderCliOutputArgumentError,
   renderCliDocument,
   renderEmptyFilteredCliOutput,
@@ -24,6 +24,22 @@ describe("CLI output argument boundary", () => {
       "left\\|right\\\\path<br>next",
     );
     expect(JSON.parse(renderCliDocument(value, "json", false))).toEqual(value);
+  });
+
+  it("preserves literal HTML and entity text in Markdown table headers and cells", () => {
+    const value = [{ "List<T>": "&copy; <br>\r\nnext" }];
+    const markdown = renderCliDocument(value, "md", false);
+    expect(markdown).toContain("List&lt;T&gt;");
+    expect(markdown).toContain("&amp;copy; &lt;br&gt;<br>next");
+    expect(JSON.parse(renderCliDocument(value, "json", false))).toEqual(value);
+  });
+
+  it("formats arrays of empty objects without column keys as JSON in Markdown", () => {
+    expect(renderCliDocument([{}], "md", false)).toBe("\\[{}\\]\n");
+    expect(renderCliDocument([{}, {}], "md", false)).toBe("\\[{},{}\\]\n");
+    expect(renderCliDocument({ empty: [{}] }, "md", false)).toBe(
+      "## empty\n\n\\[{}\\]\n",
+    );
   });
 
   it("rejects token windows that would corrupt structured output", () => {

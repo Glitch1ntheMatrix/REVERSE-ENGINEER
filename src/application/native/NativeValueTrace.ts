@@ -1,4 +1,4 @@
-import { functionDossierSchema } from "../../domain/hopperValues.js";
+import { functionDossierSchema } from "../../domain/native/functionDossier.js";
 import { nativeCallTargetsSchema } from "../../domain/native/nativeInstruction.js";
 import {
   nativeValueTraceInputSchema,
@@ -73,7 +73,11 @@ export const traceNativeValues = async (
   };
   while (pending.length > 0) {
     if (signal?.aborted)
-      return err(new AnalysisCancelledError("trace_native_values"));
+      return err(
+        new AnalysisCancelledError("trace_native_values", {
+          cause: signal.reason,
+        }),
+      );
     const next = pending.shift();
     if (
       next === undefined ||
