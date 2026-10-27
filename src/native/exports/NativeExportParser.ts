@@ -7,7 +7,6 @@ import {
   readMappedCString,
 } from "../metadata/BinaryContainer.js";
 import { architectureForElfMachine } from "../metadata/ElfImage.js";
-import { isUtf8 } from "node:buffer";
 import { readElfStringBytes } from "../metadata/ElfStringTable.js";
 import { readElfSymbol } from "../../domain/elfSymbol.js";
 import {
@@ -17,6 +16,7 @@ import {
 import { readPeImage } from "../metadata/PeImage.js";
 import {
   MAX_NATIVE_EXPORT_ROWS,
+  decodeElfExportName,
   type ElfExport,
   type NativeExportIssue,
   type NativeExports,
@@ -36,18 +36,29 @@ const MAXIMUM_NAME_BYTES = 4096;
 /** Text retained across all rows; names can repeat one long string table entry. */
 const MAXIMUM_RETAINED_TEXT_BYTES = 16 * 1024 * 1024;
 
+const retainedTextBytes = (...strings: readonly (string | null)[]): number =>
+  strings.reduce(
+    (bytes, value) =>
+      bytes + (value === null ? 0 : Buffer.byteLength(value, "utf8")),
+    0,
+  );
+
+const checkRetainedText = (bytes: number): void => {
+  if (bytes > MAXIMUM_RETAINED_TEXT_BYTES)
+    throw new BinaryResourceFailure(
+      "structure",
+      MAXIMUM_RETAINED_TEXT_BYTES,
+      `Export names exceed the ${String(MAXIMUM_RETAINED_TEXT_BYTES)}-byte retained-text allowance`,
+    );
+};
+
 /** Charge retained text and rows at their owning storage boundary. */
 const createRetention = () => {
   let rows = 0;
   let text = 0;
   const retainText = (...strings: readonly (string | null)[]): void => {
-    for (const value of strings) text += value?.length ?? 0;
-    if (text > MAXIMUM_RETAINED_TEXT_BYTES)
-      throw new BinaryResourceFailure(
-        "structure",
-        MAXIMUM_RETAINED_TEXT_BYTES,
-        `Export names exceed the ${String(MAXIMUM_RETAINED_TEXT_BYTES)}-byte retained-text allowance`,
-      );
+    text += retainedTextBytes(...strings);
+    checkRetainedText(text);
   };
   return {
     text: retainText,
@@ -293,22 +304,7 @@ const versionSectionData = (
 };
 
 /** Version names by index, read from `.gnu.version_d` and `.gnu.version_r`. */
-type DecodedElfString = {
-  readonly name: string;
-  readonly name_bytes_base64: string | null;
-  readonly name_utf8_decodable: boolean;
-};
-
-const decodeElfString = (bytes: Buffer): DecodedElfString => {
-  const utf8 = isUtf8(bytes);
-  return {
-    name: bytes.toString(utf8 ? "utf8" : "latin1"),
-    name_bytes_base64: bytes.some((byte) => byte >= 0x80)
-      ? bytes.toString("base64")
-      : null,
-    name_utf8_decodable: utf8,
-  };
-};
+type DecodedElfString = ReturnType<typeof decodeElfExportName>;
 
 const readVersionNames = (
   reader: BinaryReader,
@@ -316,8 +312,25 @@ const readVersionNames = (
   issues: NativeExportIssue[],
 ): Map<number, DecodedElfString | null> => {
   const namesByIndex = new Map<number, DecodedElfString | null>();
+  // This intermediate map owns its storage independently of repeated text in
+  // output rows. Replacing an index releases its previous decoded name.
+  let textBytes = 0;
   const addName = (index: number, name: Buffer): void => {
-    namesByIndex.set(index, name.length === 0 ? null : decodeElfString(name));
+    const decoded = name.length === 0 ? null : decodeElfExportName(name);
+    const previous = namesByIndex.get(index);
+    const nextTextBytes =
+      textBytes -
+      retainedTextBytes(
+        previous?.name ?? null,
+        previous?.name_bytes_base64 ?? null,
+      ) +
+      retainedTextBytes(
+        decoded?.name ?? null,
+        decoded?.name_bytes_base64 ?? null,
+      );
+    checkRetainedText(nextTextBytes);
+    namesByIndex.set(index, decoded);
+    textBytes = nextTextBytes;
   };
   const verneed = sections.find(({ type }) => type === SHT_GNU_VERNEED);
   if (verneed !== undefined) {
@@ -613,7 +626,7 @@ const parseElfExports = (bytes: Buffer, artifact: Artifact): NativeExports => {
     let rawNameBase64: string | null;
     try {
       const rawName = readElfStringBytes(names, symbol.name_offset);
-      const decodedName = decodeElfString(rawName);
+      const decodedName = decodeElfExportName(rawName);
       nameUtf8Decodable = decodedName.name_utf8_decodable;
       name = decodedName.name;
       rawNameBase64 = decodedName.name_bytes_base64;
