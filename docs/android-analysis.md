@@ -30,9 +30,112 @@ code units; follow `coverage.next_offset`. The page preserves `source_status` an
 `reported_total_bytes`: exhausting retained text does not make a partial decoded
 manifest complete. Complete source Evidence remains exportable under the existing
 session lifetime. Servers without retention reject summary before starting JADX.
-One-shot CLI output remains complete. Older servers require the existing complete
-request after schema discovery. APK authenticity and runtime behavior remain
+One-shot CLI output remains complete by default. Select `--detail summary` with
+`--evidence_output /local/capture.json` to retain complete Evidence before returning
+a linked view. Older servers require the existing complete request after schema discovery. APK authenticity and runtime behavior remain
 unverified.
+
+## Manifest component projection
+
+`inspect_android_package` also returns a static inventory of declared
+activities, aliases, services, receivers and providers from the decoded
+manifest. `declared_name` preserves the source attribute; `name` resolves a
+relative name only when the manifest package is known and the resolved copy
+fits the UTF-8 byte budget. An unresolved package or exhausted name budget
+retains the declared name and marks the inventory partial. Empty component
+names and names with forbidden DEX characters retain their raw spelling and
+are not treated as identities. Valid DEX spaces, including boundary spaces,
+are preserved when resolving component names and matching alias targets.
+Whitespace in the manifest package is rejected by its separate package grammar.
+Component permissions inherit the application
+permission when no component permission is declared, except an activity alias
+with no permission: Android documents that case as requiring no permission
+through the alias. `permission_source` distinguishes a local declaration,
+inherited value, no requirement (including an explicit empty override), and a
+value omitted because its resource/manifest-placeholder token is unresolved
+or the total permission-byte budget was reached. Resource and placeholder
+references are not expanded at this parser boundary. Repeated inherited
+values share one inventory-wide byte budget.
+Provider `android:readPermission` and `android:writePermission` overrides are
+not projected as separate fields; their presence marks the inventory partial
+and is called out in `limitations`. Relative component names are not resolved
+against a manifest package with surrounding whitespace.
+Class-name segments follow DEX `SimpleName` characters, including a leading
+digit or hyphen, rather than Java source identifier rules. Relative-name
+expansion does not prove class existence, DEX-version compatibility or runtime
+loadability. SDK defaults accept JADX's decimal and hexadecimal integer
+spellings; the original SDK declaration strings remain unchanged.
+
+`exported` is the declared literal `true` or `false`, otherwise null.
+`exported_default` is the documented default only where it can be established;
+it remains null for unknown provider target SDKs, nonliteral declarations, or
+components with filters targeting API 31 or later that omit the now-required
+explicit declaration. A limitation records the latter validation error.
+Provider authorities and all inventory dimensions are bounded. `status:
+"partial"` and `limitations` identify omitted declarations or values; a
+capacity limitation appears only when an actual collection limit was reached.
+The projection does not merge manifests, expand resource references, or
+observe runtime enabled/export state.
+
+`enabled` and `grant_uri_permissions` report only literal component-level
+`android:enabled` and provider-level `android:grantUriPermissions` declarations.
+They are `null` when absent or not a literal boolean; missing attributes are not
+filled from application defaults. A nonliteral declaration gets a limitation.
+`process` preserves the exact component-level `android:process` spelling (including
+empty or symbolic values), or `null` when absent or omitted under the inventory-wide
+1 MiB copy budget. Neither field resolves resources, merges manifest values or
+establishes the effective runtime process or enabled state. The exact boolean
+attributes are retained in `enabled_declaration` and
+`grant_uri_permissions_declaration`, including resource references.
+
+`intent_filters` preserves each filter's source ordinal, exact priority spelling,
+actions, categories and individual data declarations (scheme, host, port, path,
+path prefix/pattern/advanced pattern/suffix and MIME type). These are declarations,
+not computed Android matching rules. `meta_data` lists names; values remain in the
+complete decoded manifest. Component, filter, data and metadata `location` values
+use one-based lines/columns and UTF-16 offsets into that manifest. A component's
+`declaration_index` preserves its original declaration ordinal, including gaps.
+
+`declaration_coverage` distinguishes complete, partial and unknown observations.
+Historical Evidence omits newly introduced fields and defaults coverage to
+`unknown`; omission never establishes absence. Current records contain the fields,
+with null for absent or unresolved scalar declarations. The inventory retains at
+most 32 filters and 64 nested action/category/data/metadata records per component,
+and shares a 1 MiB structured-value copy budget across components. Omitted values
+or unsupported filter constructs mark coverage partial and include a limitation;
+complete retained manifest text remains accessible.
+
+For a small answer, select `detail: "summary"` with an explicit view:
+
+```json
+{
+  "kind": "android",
+  "facet": "components",
+  "actions": ["android.provider.Telephony.SMS_RECEIVED"],
+  "fields": ["name", "permission", "enabled", "process", "intent_filters"],
+  "offset": 0,
+  "limit": 16
+}
+```
+
+The same JSON works with CLI `--view` or retained `inspect_analysis_view`.
+`kinds`, `names` and `actions` use exact matching; names accept either the recorded
+declared or resolved name, actions match any requested action, and different
+filters combine with AND. `exported` matches only explicit declarations, keeping
+`exported_default` separate. Empty selectors match nothing. Every selected row
+retains its parent-array `source_index` and `declaration_coverage`; source coverage,
+parent identity and limitations remain alongside the page. Follow
+`coverage.next_offset`. The 1 MiB projection budget can shorten a page; a single
+oversized row requires fewer selected fields. Exhausting a partial source does
+not establish complete manifest coverage. `facet: "component-summary"` applies
+the same filters and counts kinds, declaration coverage and explicit/default
+exported values separately. Both adapters use the same retained projection;
+repeated pages do not reload JADX.
+
+The service `foreground_service_type` field preserves the declared attribute,
+including an empty value or surrounding spaces; `null` means the attribute is
+absent or the component is not a service. This field does not validate service
+type tokens or establish runtime eligibility.
 
 ## Supply tools
 
@@ -147,6 +250,21 @@ queries accept the same `overload_index`; the bridge resolves the selected
 method node and the result reports its index and displayed signature. These
 indices are tied to the current artifact and engine, not stable across builds.
 
+`inspect_android_class` also reports `dex_static_value` for each `static final`
+field whose class definition encodes a value in its DEX static values, so
+compile-time constants are readable even when the class has no `<clinit>`.
+Each value is typed: `boolean`, `byte`, `short`, `char` (UTF-16 code unit) and
+`int` values are JSON booleans or numbers, while `long`, `float` and `double`
+values are strings holding Java's text for the value, so 64-bit values stay
+exact. The field reports `null` when no value is encoded, the encoded value is
+null or of another kind, or the field is not `static final`. The value is read from parsed
+metadata without generating source, and a static initializer can still assign
+the field; use `inspect_android_method` on `<clinit>` for that evidence.
+Only `inspect_android_class` asks the bridge for these values.
+`inspect_android_method` and `trace_android_references` read the member-only
+class summary, so large encoded strings cannot push their member lookup past
+the 8 MiB protocol frame limit.
+
 Smali fallbacks select one complete block using the original method name and DEX
 descriptor, before applying the source byte limit. This preserves the selected
 overload even when Java code generation renames a method. If the selected Java
@@ -171,8 +289,14 @@ the same source byte limit and explicit truncation reporting.
 ## Interpret the result
 
 - Package inspection retains decoded manifest XML, summary declarations,
-  permissions and class/resource counts. Summary fields are extracted by the
-  upstream engine and should be checked against the retained XML when needed.
+  permissions and class/resource counts. REA's bridge selects the exact root
+  `AndroidManifest.xml` resource by original archive name and manifest type,
+  independently of asset order. One namespace-aware JDK XML parse supplies
+  summary attributes and direct permission/SDK declarations; namespace prefixes
+  and XML entity spelling do not change their values. Raw decoded XML is retained
+  exactly and only its displayed text is subject to the existing source byte cap.
+  Summaries use the complete selected XML before that cap. Document types are
+  unsupported; parsing does not load external DTDs, schemas, or XInclude files.
   Signature verification is explicitly `not_performed`.
 - Class search filters the engine's cached top-level names before transferring
   pages, then follows contiguous inventory positions without rescanning earlier
@@ -187,6 +311,13 @@ the same source byte limit and explicit truncation reporting.
   full reported display types, fields and inner class names. Synthetic members
   that code generation hides can appear in the inventory; it stays consistent
   after method decompilation within the retained session.
+  Class and method inspection and reference tracing accept either the exact
+  reported class name or its original binary name, including `$` in nested and
+  anonymous classes. The bridge keeps both identities from JADX; it does not
+  replace separators or guess suffix matches. Ambiguous selectors are refused.
+  Follow-up calls preserve the selected name, while results report the frozen
+  JADX display name. Quote `$` names in the shell, for example
+  `'com.example.Manager$WorkerThread'`.
   Exact DEX prototypes are reported from frozen JADX method metadata as
   `dex_descriptor`, for example `(I)V`. Display names can be JADX aliases;
   the descriptor alone is not a complete raw DEX method ID. Overload indices
@@ -256,6 +387,10 @@ such as
 `libreactnativejni.so`, `libreactnative.so`, `libhermes.so`,
 `libhermes_executor.so`, `libflutter.so`, and `libunity.so`; unrelated names
 such as `libcommunity.so` and `libreactivity.so` do not identify those families.
+The signing list retains the `META-INF/MANIFEST.MF`, `.SF`, `.RSA`, `.DSA`, and
+`.EC` paths selected by Android's v1 verifier, including nested paths. These are
+inventory metadata candidates, not proof that a v1 signature verifies or that
+the APK is signed; use `inspect-apk-signature` for signature analysis.
 The bridge basis is inferred from the native path and repeated for each managed
 component, so it does not identify a specific JNI binding. Bridge hypotheses form a DEX/JVM-class by native-library
 Cartesian product. The projection computes the product and exact serialized
@@ -335,9 +470,18 @@ export REA_JADX_OPERATION_TIMEOUT_MS=600000
 ```
 
 The value must be a decimal millisecond count from 1 to 2147483647; anything
-else is refused before Java starts. The same deadline bounds each upstream
-call, a timeout reports the selected value, and a passing JADX configuration
-check in `rea doctor` reports the effective `operation_timeout_ms`. Explicit
+else is refused before Java starts. REA reads it from the environment captured
+at process start. Changing that environment requires a new REA process. On a
+running MCP server, set `jadx.operation_timeout_ms` through
+`update_analysis_settings` to change the default for newly accepted operations;
+queued or running operations retain their accepted budget. The same deadline
+bounds each upstream call. Timeout recovery reports the effective milliseconds
+and range, with `details.limit` identifying the runtime setting. An invalid
+provider-local launch value can also be repaired by a runtime override; reset
+exposes that invalid launch value again. See the
+[settings design](design/limits-and-recovery.md#invalid-launch-configuration).
+A passing JADX configuration check in `rea doctor` reports its launch-derived
+`operation_timeout_ms`; it does not inspect another running server's overrides. Explicit
 cancellation still ends the operation immediately, and partial observations
 and owned-process cleanup are unchanged. Raising the deadline does not extend
 the bridge's 30-second startup handshake or the upstream **90-second**
