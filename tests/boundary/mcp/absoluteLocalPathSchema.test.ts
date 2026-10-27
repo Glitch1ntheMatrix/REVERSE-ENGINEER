@@ -95,6 +95,77 @@ const standaloneAnalysisCases = (
     issuePath: ["path"],
   }));
 
+const mcpAbsolutePathCases = (
+  absolute: string,
+  relative: string,
+): readonly PathInputCase[] => {
+  const pathCase = (
+    name: string,
+    field: string,
+    valid: Readonly<Record<string, unknown>>,
+    invalid: Readonly<Record<string, unknown>>,
+  ): PathInputCase => ({ name, field, valid, invalid });
+
+  return [
+    pathCase(
+      "inspect_apple_ips",
+      "path",
+      { path: absolute },
+      { path: relative },
+    ),
+    pathCase(
+      "inspect_elf_notes",
+      "path",
+      { path: absolute },
+      { path: relative },
+    ),
+    pathCase(
+      "inspect_kernel_module",
+      "path",
+      { path: absolute },
+      { path: relative },
+    ),
+    pathCase(
+      "export_web_scripts",
+      "capture_path",
+      { capture_path: absolute, output_directory: absolute },
+      { capture_path: relative, output_directory: absolute },
+    ),
+    pathCase(
+      "export_web_scripts",
+      "output_directory",
+      { capture_path: absolute, output_directory: absolute },
+      { capture_path: absolute, output_directory: relative },
+    ),
+    pathCase(
+      "recover_javascript_sources",
+      "path",
+      { path: absolute, output_directory: absolute },
+      { path: relative, output_directory: absolute },
+    ),
+    pathCase(
+      "recover_javascript_sources",
+      "additional_paths[0]",
+      {
+        path: absolute,
+        additional_paths: [absolute],
+        output_directory: absolute,
+      },
+      {
+        path: absolute,
+        additional_paths: [relative],
+        output_directory: absolute,
+      },
+    ),
+    pathCase(
+      "recover_javascript_sources",
+      "output_directory",
+      { path: absolute, output_directory: absolute },
+      { path: absolute, output_directory: relative },
+    ),
+  ];
+};
+
 const inputCases = (
   absolute: string,
   relative: string,
@@ -169,6 +240,7 @@ const inputCases = (
       { path: absolute },
       { path: relative },
     ),
+    ...mcpAbsolutePathCases(absolute, relative),
     pathCase(
       "extract_firmware",
       "path",
