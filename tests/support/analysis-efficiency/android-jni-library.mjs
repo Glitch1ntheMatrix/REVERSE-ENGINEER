@@ -106,13 +106,15 @@ async function verify(expected, variant) {
 for (const [variant, value] of Object.entries(oracle.variants))
   for (const expected of Object.values(value.libraries))
     await verify(expected, variant);
-const conscrypt = JSON.parse(
-  await readFile(
-    join(values["fixture-root"], "oracle/conscrypt-arm64.json"),
-    "utf8",
-  ),
-);
-await verify(conscrypt, "conscrypt");
+if (Object.hasOwn(oracle, "conscrypt")) {
+  const conscrypt = JSON.parse(
+    await readFile(
+      join(values["fixture-root"], "oracle/conscrypt-arm64.json"),
+      "utf8",
+    ),
+  );
+  await verify(conscrypt, "conscrypt");
+}
 const fingerprints = {};
 for (const relative of [
   ".",

@@ -1,10 +1,97 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   decodeJniModifiedUtf8,
   inspectAndroidJniLibrary,
 } from "../../../src/native/android/AndroidJniLibrary.js";
 import { androidJniLibraryFactsSchema } from "../../../src/domain/android/androidJniLibraryFacts.js";
+import { projectAndroidJniBindings } from "../../../src/domain/android/androidJniBindings.js";
 import { jniElfFixture } from "../../fixtures/android/jniElf.js";
+import { elfAliasedVersionImage } from "../../fixtures/binaryDiagnostics/nativeExports.js";
+import * as nativeExportNames from "../../../src/domain/native/nativeExports.js";
+
+it.each(["name", "descriptor"] as const)(
+  "keeps a %s beyond the string read allowance unknown and preserves later valid entries",
+  async (facet) => {
+    const original = jniElfFixture();
+    const name = facet === "name" ? "m".repeat(65_536) : "call_猫";
+    const descriptor =
+      facet === "descriptor" ? `(L${"a".repeat(65_536)};)V` : "()V";
+    const text = facet === "name" ? name : descriptor;
+    const bytes = Buffer.concat([original.bytes, Buffer.from(text + "\0")]);
+    bytes.writeBigUInt64LE(BigInt(bytes.length - 0x400), 152);
+    bytes.writeBigUInt64LE(BigInt(bytes.length - 0x400), 160);
+    bytes.writeBigUInt64LE(
+      original.base + BigInt(original.bytes.length),
+      0x800 + (facet === "name" ? 0 : 24) + 16,
+    );
+    const parsed = await inspectAndroidJniLibrary(bytes);
+    if (!parsed.ok) throw new Error(parsed.error.message);
+    expect(parsed.value.coverage.tables_status).toBe("partial");
+    expect(parsed.value.unknowns.join("\n")).toContain(
+      "NUL-termination read allowance",
+    );
+    expect(
+      parsed.value.tables
+        .flatMap((table) => table.entries)
+        .map((entry) => entry.name),
+    ).toEqual(["overload", "𐐀"]);
+    const report = projectAndroidJniBindings({
+      apk: { path: "/selected/large-native.apk", sha256: "a".repeat(64) },
+      selection: {},
+      inventory: {
+        scope: "apk-root-dex-declarations",
+        methods: [
+          {
+            source_index: 0,
+            class_name: "fixture.Owner",
+            method_name: name,
+            descriptor,
+            dex_entry: "classes.dex",
+            dex_entry_index: 0,
+            class_index: 0,
+            method_index: 0,
+          },
+        ],
+        coverage: {
+          status: "complete",
+          dex_entries: 1,
+          examined_dex_entries: 1,
+          examined_classes: 1,
+          examined_methods: 1,
+        },
+        unknowns: [],
+      },
+      libraries: [
+        {
+          library_id: "selected-library",
+          source_index: 0,
+          source_key: "zip-entry:0",
+          path: "lib/arm64-v8a/libfixture.so",
+          source_path: "lib/arm64-v8a/libfixture.so",
+          abi: "arm64-v8a",
+          sha256: "b".repeat(64),
+          size: bytes.length,
+          declared_size: bytes.length,
+          compressed_size: bytes.length,
+          facts: parsed.value,
+          failure: null,
+        },
+      ],
+      libraryInventory: {
+        status: "complete",
+        examined_entries: 1,
+        selected_libraries: 1,
+        unknowns: [],
+      },
+    });
+    if (!report.ok) throw new Error(report.error.kind);
+    expect(report.value.bindings[0]).toMatchObject({
+      status: "unknown",
+      coverage: "partial",
+      candidate_ids: [],
+    });
+  },
+);
 
 it.each([
   [64, 183, "rela"],
@@ -216,7 +303,7 @@ it.each([32, 64] as const)(
   },
 );
 
-it("cooperatively preserves cancellation after the export packet", async () => {
+it("cooperatively preserves cancellation at the first parser checkpoint", async () => {
   const controller = new AbortController();
   const operation = inspectAndroidJniLibrary(jniElfFixture().bytes, {
     signal: controller.signal,
@@ -226,6 +313,41 @@ it("cooperatively preserves cancellation after the export packet", async () => {
     ok: false,
     error: { kind: "cancelled" },
   });
+});
+
+it("observes cancellation during GNU version work before decoding export symbols", async () => {
+  const controller = new AbortController();
+  const reason = new Error("cancel after version-name decoding began");
+  const originalDecode = nativeExportNames.decodeElfExportName;
+  let enteredVersionWork = false;
+  const decode = vi
+    .spyOn(nativeExportNames, "decodeElfExportName")
+    .mockImplementation((bytes) => {
+      if (bytes.length === 65_535 && !enteredVersionWork) {
+        enteredVersionWork = true;
+        queueMicrotask(() => controller.abort(reason));
+      }
+      return originalDecode(bytes);
+    });
+  try {
+    const result = await inspectAndroidJniLibrary(
+      elfAliasedVersionImage("requirements", 65_535),
+      { signal: controller.signal },
+    );
+    expect(enteredVersionWork).toBe(true);
+    expect(controller.signal.reason).toBe(reason);
+    expect(result).toMatchObject({ ok: false, error: { kind: "cancelled" } });
+    expect(
+      decode.mock.calls.filter(([bytes]) => bytes.length === 65_535),
+    ).toHaveLength(1);
+    expect(
+      decode.mock.calls.some(
+        ([bytes]) => bytes.toString("utf8") === "versioned_export",
+      ),
+    ).toBe(false);
+  } finally {
+    decode.mockRestore();
+  }
 });
 
 const appendRelative = (

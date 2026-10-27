@@ -91,6 +91,10 @@ file offsets, raw words, relocated words and function addresses. `oracle/dex.jso
 independent proof. Generated APK hashes are per-run identities; ZIP metadata can
 vary between runs. Keep all generated binaries, caches and receipts outside Git.
 
+The static library checker reads the Conscrypt oracle only when the generated
+expectations declare that optional case. A declared but missing oracle fails
+verification; NDK-only expectations require only their 24 generated libraries.
+
 Optional `--conscrypt-aar` and `--conscrypt-original-dex-zip` package the already
 acquired Conscrypt Android **2.8.0** original-name D8 together with the exact four
 native libraries from the public Apache-2.0 AAR. The source AAR SHA-256 is
@@ -120,7 +124,8 @@ node tests/support/analysis-efficiency/android-jni.mjs \
 ```
 
 Use `relr`, `aps2` or `conscrypt` with its corresponding APK for the other cases.
-Two passes distinguish a cold provider from warm reuse. `--proof` counts and
+Two passes distinguish a cold provider from warm reuse. Add `--omit-detail` with
+`--detail summary` to verify the MCP default through an actually omitted argument. `--proof` counts and
 checks complete Evidence export; `--pages` checks all four collections, selected
 fields, empty filters, native source ordinals, coverage and parent row indices;
 `--cli` checks one CLI result after MCP cleanup. Optional `--retained-removal`

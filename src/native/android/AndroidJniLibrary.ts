@@ -8,13 +8,14 @@ import type {
   AndroidJniTableEntry,
   AndroidJniTableSlot,
 } from "../../domain/android/androidJniLibraryFacts.js";
-import { parseNativeExports } from "../exports/NativeExportParser.js";
+import { parseNativeExportsSteps } from "../exports/NativeExportParser.js";
 import { readElfDirectoryFromBuffer } from "../metadata/NativeSectionDirectory.js";
 import { readElfImage } from "../metadata/ElfImage.js";
 import {
   BinaryFormatFailure,
   BinaryMappingFailure,
   BinaryResourceFailure,
+  BinaryStringReadLimitFailure,
   createFileMappingIndex,
 } from "../metadata/BinaryContainer.js";
 import {
@@ -127,11 +128,18 @@ export const inspectAndroidJniLibrary = async (
           "JNI library facts exceed the 16 MiB retained representation allowance",
         );
     };
-    const rawExports = parseNativeExports(bytes, {
+    const exportSteps = parseNativeExportsSteps(bytes, {
       path: "[admitted immutable ELF bytes]",
       sha256: createHash("sha256").update(bytes).digest("hex"),
       bytes: bytes.length,
     });
+    let exportStep = exportSteps.next();
+    while (!exportStep.done) {
+      await immediate();
+      active();
+      exportStep = exportSteps.next();
+    }
+    const rawExports = exportStep.value;
     if (rawExports.format !== "elf")
       return err({
         kind: "unsupported",
@@ -297,6 +305,12 @@ export const inspectAndroidJniLibrary = async (
         if (cause instanceof BinaryMappingFailure) {
           if (cause.reason !== "unmapped") throw cause;
           stringWork += scanned ? allowance + 1 : 1;
+        } else if (cause instanceof BinaryStringReadLimitFailure) {
+          stringWork += allowance + 1;
+          tablesStatus = "partial";
+          unknowns.add(
+            `Some JNI candidate strings exceeded the ${cause.maximumBytes}-byte NUL-termination read allowance; omitted entries remain unknown`,
+          );
         } else if (cause instanceof BinaryFormatFailure) {
           // Unterminated source bytes also consume their actual scan allowance.
           stringWork += allowance + 1;

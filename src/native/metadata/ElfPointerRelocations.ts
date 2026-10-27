@@ -59,7 +59,7 @@ export interface ElfPointerRelocationInput {
   readonly zeroFills: readonly ZeroFillMapping[];
 }
 
-// Bounds retained writes and indices, including duplicate source records.
+// JNI sparse consumers retain per-write provenance; streaming materializers do not.
 const MAX_RELOCATION_RECORDS = 65_536;
 const DT_RELA = 7n,
   DT_RELASZ = 8n,
@@ -192,7 +192,7 @@ const RELOCATION_KINDS = new Map([
 function* dynamicTags(
   bytes: Buffer,
   input: ElfPointerRelocationInput,
-): Generator<void, Map<bigint, bigint>> {
+): Generator<undefined, Map<bigint, bigint>> {
   yield;
   if (input.dynamicSegments.length > 1)
     malformed("multiple PT_DYNAMIC segments");
@@ -230,15 +230,25 @@ function* dynamicTags(
   return malformed("PT_DYNAMIC has no DT_NULL terminator");
 }
 
-/** One immutable loader interpretation, shared by IL2CPP and JNI consumers. */
-export function* readElfPointerRelocationsSteps(
+export interface ElfRelocationStreamResult {
+  readonly issues: readonly string[];
+  readonly dynamic_present: boolean;
+  readonly pointer_coverage_known: boolean;
+  readonly originalPointerAt: (
+    address: bigint,
+  ) => ElfOverlayPointer | undefined;
+}
+type RelocationOptions = {
+  readonly unsupported?: "reject" | "record";
+  readonly requireDynamic?: boolean;
+};
+
+/** Decode once from immutable bytes; consumers choose streaming or sparse retention. */
+export function* readElfRelocationWritesSteps(
   bytes: Buffer,
   input: ElfPointerRelocationInput,
-  options: {
-    readonly unsupported?: "reject" | "record";
-    readonly requireDynamic?: boolean;
-  } = {},
-): Generator<void, ElfPointerOverlay> {
+  options: RelocationOptions = {},
+): Generator<ElfPointerWrite | undefined, ElfRelocationStreamResult> {
   const kinds = RELOCATION_KINDS.get(input.machine);
   if (kinds === undefined || kinds.bits !== input.bits)
     throw new ElfPointerRelocationFailure(
@@ -285,49 +295,34 @@ export function* readElfPointerRelocationsSteps(
       );
     return at;
   };
-  const writes: ElfPointerWrite[] = [];
-  const unresolved = new Map<bigint, number>();
-  const values = new Map<bigint, ElfPointerWrite>();
-  const widths = new Map<bigint, number>();
   const issues = new Set<string>();
-  let known = true,
-    records = 0;
-  const admitRecord = () => {
-    if (++records > MAX_RELOCATION_RECORDS)
-      throw new ElfPointerRelocationFailure(
-        "native-index-capacity",
-        `ELF relocation overlay exceeds ${MAX_RELOCATION_RECORDS} records`,
-      );
-  };
+  let known = true;
   const unsupported = (message: string) => {
     if (options.unsupported !== "record")
       throw new ElfPointerRelocationFailure(
         "unsupported-pointer-encoding",
         message,
       );
-    issues.add(message);
+    if (issues.size < 16) issues.add(message);
+    else
+      issues.add(
+        "Additional unsupported relocation encodings were not individually listed",
+      );
     known = false;
   };
-  const append = (
+  const write = (
     address: bigint,
     width: number,
     value: bigint | null,
     source: ElfPointerRelocationSource,
-  ) => {
-    const at =
-      value === null ? fileOffset(address, width) : target(address, width);
-    const write = { address, width, value, file_offset: at, source };
-    writes.push(write);
-    widths.set(address, Math.max(widths.get(address) ?? 0, width));
-    if (value === null)
-      unresolved.set(address, Math.max(unresolved.get(address) ?? 0, width));
-    else {
-      const previous = values.get(address);
-      if (previous !== undefined && previous.value !== value)
-        unresolved.set(address, Math.max(unresolved.get(address) ?? 0, width));
-      values.set(address, write);
-    }
-  };
+  ): ElfPointerWrite => ({
+    address,
+    width,
+    value,
+    file_offset:
+      value === null ? fileOffset(address, width) : target(address, width),
+    source,
+  });
   if (PACKED_TAGS.some((tag) => tags.has(tag)))
     unsupported(
       "Android packed APS2 relocation write locations and addends are not decoded",
@@ -340,7 +335,7 @@ export function* readElfPointerRelocationsSteps(
     size: bigint | undefined,
     entry: bigint,
     encoding: "rel" | "rela",
-  ): Generator<void> {
+  ): Generator<ElfPointerWrite | undefined> {
     const width = word * (encoding === "rela" ? 3 : 2);
     if (
       size === undefined ||
@@ -358,7 +353,6 @@ export function* readElfPointerRelocationsSteps(
       return malformed(`${encoding.toUpperCase()} table is not file-backed`);
     for (let at = start; at < start + Number(size); at += width) {
       if ((at - start) % (width * 4096) === 0) yield;
-      admitRecord();
       const parsed =
         encoding === "rela"
           ? readElfRelocationEntry(
@@ -383,7 +377,7 @@ export function* readElfPointerRelocationsSteps(
           unsupported(`ELF relocation kind ${kind} is not decoded`);
           continue;
         }
-        append(destination, width, null, source);
+        yield write(destination, width, null, source);
         continue;
       }
       const slot = target(destination, word);
@@ -394,7 +388,12 @@ export function* readElfPointerRelocationsSteps(
       if (encoding === "rela" && explicitAddend === undefined)
         return malformed("RELA relocation has no decoded addend");
       const addend = explicitAddend ?? (slot === null ? 0n : rawWord(slot));
-      append(destination, word, BigInt.asUintN(input.bits, addend), source);
+      yield write(
+        destination,
+        word,
+        BigInt.asUintN(input.bits, addend),
+        source,
+      );
     }
   }
   for (const [addressTag, sizeTag, entryTag, encoding] of [
@@ -452,25 +451,24 @@ export function* readElfPointerRelocationsSteps(
       if ((at - start) % (word * 4096) === 0) yield;
       const entry = rawWord(at);
       const add = (address: bigint) => {
-        admitRecord();
         if (address > (1n << BigInt(input.bits)) - BigInt(word))
           malformed("RELR destination overflows the ELF address space");
         const slot = target(address, word);
-        append(address, word, slot === null ? 0n : rawWord(slot), {
+        return write(address, word, slot === null ? 0n : rawWord(slot), {
           encoding: "relr",
           record_file_offset: at,
           kind: null,
         });
       };
       if ((entry & 1n) === 0n) {
-        add(entry);
+        yield add(entry);
         next = entry + BigInt(word);
       } else {
         if (next === undefined)
           return malformed("RELR bitmap has no preceding address");
         for (let bit = 1; bit < input.bits; bit++)
           if ((entry & (1n << BigInt(bit))) !== 0n)
-            add(next + BigInt((bit - 1) * word));
+            yield add(next + BigInt((bit - 1) * word));
         next += BigInt((input.bits - 1) * word);
         if (next > 1n << BigInt(input.bits))
           malformed("RELR bitmap overflows the ELF address space");
@@ -478,6 +476,64 @@ export function* readElfPointerRelocationsSteps(
     }
   }
 
+  return {
+    issues: [...issues],
+    dynamic_present: input.dynamicSegments.length !== 0,
+    pointer_coverage_known: known,
+    originalPointerAt: (address) => {
+      const at = fileOffset(address, word);
+      return at === null
+        ? undefined
+        : { value: rawWord(at), file_offset: at, relocation: null };
+    },
+  };
+}
+
+/** Retain bounded sparse pointer facts for consumers that query the original image. */
+export function* readElfPointerRelocationsSteps(
+  bytes: Buffer,
+  input: ElfPointerRelocationInput,
+  options: RelocationOptions = {},
+): Generator<void, ElfPointerOverlay> {
+  const word = input.bits / 8;
+  const writes: ElfPointerWrite[] = [];
+  const unresolved = new Map<bigint, number>();
+  const values = new Map<bigint, ElfPointerWrite>();
+  const widths = new Map<bigint, number>();
+  const steps = readElfRelocationWritesSteps(bytes, input, options);
+  let next = steps.next();
+  while (!next.done) {
+    const write = next.value;
+    if (write === undefined) yield;
+    else {
+      if (writes.length >= MAX_RELOCATION_RECORDS)
+        throw new ElfPointerRelocationFailure(
+          "native-index-capacity",
+          `ELF sparse relocation index exceeds ${MAX_RELOCATION_RECORDS} retained writes`,
+        );
+      writes.push(write);
+      const { address, width, value } = write;
+      widths.set(address, Math.max(widths.get(address) ?? 0, width));
+      if (value === null)
+        unresolved.set(address, Math.max(unresolved.get(address) ?? 0, width));
+      else {
+        const previous = values.get(address);
+        if (previous !== undefined && previous.value !== value)
+          unresolved.set(
+            address,
+            Math.max(unresolved.get(address) ?? 0, width),
+          );
+        values.set(address, write);
+      }
+    }
+    next = steps.next();
+  }
+  const {
+    issues,
+    dynamic_present,
+    pointer_coverage_known: known,
+    originalPointerAt,
+  } = next.value;
   // Index one span per destination. Reads cannot mistake bytes changed by a
   // partial or unresolved relocation for an original valid pointer.
   const ranges = [...widths]
@@ -518,10 +574,7 @@ export function* readElfPointerRelocationsSteps(
         file_offset: relocated.file_offset,
         relocation: relocated.source,
       };
-    const at = fileOffset(address, word);
-    return at === null
-      ? undefined
-      : { value: rawWord(at), file_offset: at, relocation: null };
+    return originalPointerAt(address);
   };
   const hasWrites = (address: bigint, size: number): boolean => {
     const end = address + BigInt(size);
@@ -537,8 +590,8 @@ export function* readElfPointerRelocationsSteps(
   return {
     writes,
     unresolved,
-    issues: [...issues],
-    dynamic_present: input.dynamicSegments.length !== 0,
+    issues,
+    dynamic_present,
     pointer_coverage_known: known,
     pointerAt,
     hasWrites,

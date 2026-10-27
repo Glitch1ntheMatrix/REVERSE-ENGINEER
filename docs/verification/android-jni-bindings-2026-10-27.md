@@ -229,6 +229,62 @@ summary/catalog/call receipt SHA-256 values are respectively
 `0c36244f5ff788fabd5491144b0711e99ad211ce3c09e1812d1d4da5753624ac`, and
 `e1f021f0a7a92f101a037a1467a3428b4c620482eb556d81501a5ea64226ab82`.
 
+### Review corrections and final qualification
+
+Four review findings were reproduced or confirmed at their producing boundaries:
+
+- The shared relocation reader had charged every file-backed write against a
+  sparse retention limit. Its single immutable decoder now streams writes;
+  IL2CPP applies them to its existing private copy and retains only bounded
+  unresolved/zero-fill state and a file-offset bitmap. JNI keeps its bounded
+  sparse provenance index. The two actual IL2CPP registration-read regressions
+  each include 65,537 extra file-backed relative writes (AArch64 and x86-64)
+  and verify the original bytes remain unchanged.
+- GNU version headers could replay shared auxiliary chains and names. The shared
+  export owner now bounds total record visits from section bytes and the existing
+  export-row allowance, caches decoded/failed string offsets within 16 MiB, and
+  yields checkpoints through the same generator used by synchronous callers.
+  Refusal retains exports with partial coverage and unknown version names.
+  Both GNU table variants exercise 10,000 headers replaying 65,535 auxiliary
+  records and a 65,535-byte name, verifying one decode and cooperative yields.
+- A named mapped-string read-limit failure now distinguishes budget exhaustion
+  from invalid text. JNI preserves later candidates, marks tables partial and
+  projects absent candidates as unknown. Both long names and descriptors are
+  covered. An additional actual JNI-consumer regression queues cancellation
+  after GNU name decoding begins and stops before export-symbol decoding.
+- The static verifier now requires the Conscrypt oracle only when expectations
+  advertise it. Executed controls pass with 25 libraries/33 entries when present,
+  and 24 libraries/32 entries for NDK-only expectations; an advertised missing
+  oracle rejects with ENOENT and writes no success receipt.
+
+Type/lint/build and 330 cases in 13 related domain, parser, archive, IL2CPP and
+actual CLI/stdio MCP files pass together: 192.437 seconds, CPU 224.376 seconds,
+peak sampled family RSS 4190.2 MiB. After adding the during-version cancellation
+case, type/lint and all 38 JNI parser cases pass: 39.842 seconds, CPU 67.581
+seconds, peak RSS 3928.0 MiB. These overlap earlier gates; counts are not summed
+as unique tests.
+
+The final built parser again passes the independent 25-library/33-entry oracle:
+0.975 seconds, CPU 1.009 seconds, peak RSS 103.9 MiB. Built parser SHA-256 is
+`7c0638751427b2b282b8e55bb21c95f6c3f05c246b0ea66a31d0280694f9ffeb`;
+its receipt also fingerprints every shared parsing dependency. The fixed oracle
+SHA-256 above is unchanged. Large-capacity IL2CPP verification uses valid producer
+fixtures, not a newly qualified real IL2CPP application.
+
+A fresh Conscrypt investigation qualification again passes 33 SDK calls,
+12 pages, proof, a cold CLI check and owned-copy removal. Investigation facts
+retain the same digest above. Cold/warm task times are 23.529/1.015 seconds;
+whole time 66.284 seconds, CPU 77.940 seconds, peak RSS 1402.6 MiB. Warm text/SDK
+estimates are 31,955/348,569. Host/time variation does not establish a general
+latency improvement. Cumulative successful public qualification is now 371 SDK
+calls and eleven CLI parity checks, across the explicitly separated revisions.
+The final cohort summary/calls SHA-256 values are
+`84df4f4ed97f6d1a931010db8e16420e5f06df371940ed9225eb99a7a7c01094` and
+`2c22b89e5ec4b26f15f0e9c5f8fdfd4af8583ad0926ad32edb359ecd991cd7fd`;
+its catalog hash matches the default-summary cohort. No resource guard or OOM
+occurred. Final `docs:check`, `format:check` and `docs:build` pass in
+38.602 seconds, CPU 49.448 seconds, peak sampled family RSS 1286.2 MiB.
+
 ## Reproduction and limitations
 
 Build the runtime, generate the source fixtures using selected existing JDK,
