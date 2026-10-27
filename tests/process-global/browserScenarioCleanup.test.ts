@@ -367,10 +367,22 @@ it("preserves the initial partial observation when the provider cleanup retry al
   try {
     const result = await serveScenario();
     expect(result.output).toMatchObject({ code: "cleanup_incomplete" });
-    expect(JSON.stringify(result.output)).toContain("injected close failure 1");
-    expect(JSON.stringify(result.output)).toContain("injected close failure 2");
     expect(result.output).toMatchObject({
       details: {
+        diagnostics: {
+          primary_error: {
+            details: {
+              diagnostics: {
+                primary_error: {
+                  details: { cleanup_reason: "injected close failure 1" },
+                },
+              },
+            },
+          },
+          cleanup_error: {
+            details: { diagnostics: { reason: "injected close failure 2" } },
+          },
+        },
         partial_observation: {
           capture: {
             browser: { cleanup: "incomplete" },
@@ -497,12 +509,12 @@ it("preserves a thrown capture error when provider shutdown also rejects", async
         execution_failure: "provider_timeout",
         diagnostics: {
           primary_error: { code: "provider_timeout", category: "timeout" },
+          cleanup_error: {
+            details: { diagnostics: { reason: "secondary shutdown failure" } },
+          },
         },
       },
     });
-    expect(JSON.stringify(result.output)).toContain(
-      "secondary shutdown failure",
-    );
     expect(close).toHaveBeenCalledTimes(1);
   } finally {
     await provider.close();
