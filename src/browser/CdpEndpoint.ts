@@ -98,6 +98,7 @@ export interface CdpEndpointTarget {
 
 export interface CdpEndpointDiscovery {
   readonly limitations?: readonly string[];
+  readonly ambiguousTargetIds?: readonly string[];
   readonly webSocket: CdpWebSocketEndpoint;
   readonly version: {
     readonly product: string;
@@ -130,12 +131,13 @@ export const discoverCdpEndpoint = async (
     versionInput,
     operation,
   );
-  const { targets, limitations } = parseCdpDiscoveryTargets(
+  const { targets, limitations, ambiguousTargetIds } = parseCdpDiscoveryTargets(
     targetsInput,
     operation,
   );
   return {
     limitations,
+    ambiguousTargetIds,
     webSocket: safeCdpWebSocketEndpoint(
       endpoint,
       version.webSocketDebuggerUrl,
@@ -153,7 +155,7 @@ export const discoverCdpEndpoint = async (
       type: target.type,
       title: sanitizeTargetTitle(target.title, target.url),
       url: target.url,
-      attached: target.attached ?? null,
+      attached: target.attached,
       ...targetWebSocket(endpoint, target, operation),
     })),
   };
@@ -220,7 +222,7 @@ export const withCdpDiscoveryDeadline = async <T>(
  * apply the discovery deadline through `signal`.
  */
 export const discoverCdpBrowserSocket = async (
-  connection: CdpConnection,
+  connection: Pick<CdpConnection, "send">,
   url: string,
   operation: BrowserObservationOperation,
   signal?: AbortSignal,
@@ -242,13 +244,14 @@ export const discoverCdpBrowserSocket = async (
     versionInput,
     operation,
   );
-  const { targets, limitations } = parseCdpDiscoveryTargets(
+  const { targets, limitations, ambiguousTargetIds } = parseCdpDiscoveryTargets(
     recordValue(targetsInput)?.targetInfos,
     operation,
     "browser-socket",
   );
   return {
     limitations,
+    ambiguousTargetIds,
     webSocket: { scope: "browser", url },
     version: {
       product: version.product,
